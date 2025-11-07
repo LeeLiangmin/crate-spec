@@ -104,6 +104,7 @@ impl CrateToml {
         irresolve_depinfos
     }
 
+    // write package info and dependency info to package context at current
     pub fn write_info_to_package_context(
         &self,
         package_context: &mut PackageContext,

@@ -39,7 +39,7 @@ impl<T: enc::Encode + 'static> Encode for RawArrayType<T> {
     }
 }
 
-impl<T: enc::Encode + 'static + bincode::de::Decode> Decode for RawArrayType<T> {
+impl<T: enc::Encode + 'static + bincode::de::Decode<()>> Decode for RawArrayType<T> {
     type Output = RawArrayType<T>;
     fn decode(bin: &[u8]) -> Self::Output {
         let mut decoder = create_bincode_slice_decoder(bin);

@@ -66,28 +66,6 @@ impl CratePackage {
 }
 
 impl PackageContext {
-    pub fn binary_before_sig(&self, crate_package: &CratePackage, bin: &[u8]) -> Vec<u8> {
-        //FIXME
-        let ds_size = crate_package
-            .section_index
-            .datasection_size_without_sig();
-        let total_size = crate_package.crate_header.ds_offset as usize + ds_size;
-        if crate_package.section_index.sig_num() != self.sigs.len() && !self.sigs.is_empty() {
-            assert_eq!(crate_package.section_index.sig_num(), 0);
-        }
-        let mut buf = bin[..total_size].to_vec();
-        let zero_begin = crate_package.crate_header.si_offset as usize
-            + crate_package.section_index.none_sig_size();
-        let zero_end = crate_package.crate_header.si_offset as usize
-            + crate_package.crate_header.si_size as usize;
-        //FIXME this is not efficient
-        for i in buf.iter_mut().take(zero_end).skip(zero_begin) {
-            *i = 0;
-        }
-
-        buf
-    }
-
     pub fn binary_before_digest(&self, bin: &[u8]) -> Vec<u8> {
         bin[..bin.len() - FINGERPRINT_LEN].to_vec()
     }

@@ -59,17 +59,31 @@ fn main() {
             return;
         }
 
-        //pack package
+        // pack package
+        // add .crate file, package info and dependency info to package context.
         let mut pack_context = pack_context(&args.input);
 
-        //sign package
+
+        // setup sign tool
         let mut pkcs = PKCS::new();
+
+
+        // pcks ared initialized with cert, pkey and root ca.
         pkcs.load_from_file_writer(
             args.cert_path.unwrap(),
             args.pkey_path.unwrap(),
             args.root_ca_paths,
         );
+
+        // only add sign info without size and bin for now
+        // nomatter what kind of sign, we only add one sign info for now.
+        // todo: later support multiple signs.
         pack_context.add_sig(pkcs, SIGTYPE::CRATEBIN);
+
+        
+        // todo: later support file sign.
+        // pack_context.add_sig(pkcs, SIGTYPE::FILE);
+        
 
         //encode package to binary
         let (_, _, bin) = pack_context.encode_to_crate_package();
@@ -120,9 +134,10 @@ fn main() {
                 pack_context.pack_info, pack_context.dep_infos
             ),
         )
-            .unwrap();
+        .unwrap();
     } else {
         eprintln!("-e or -d not found!");
         return;
     }
 }
+

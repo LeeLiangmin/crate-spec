@@ -1,9 +1,10 @@
 use crate::utils::package::{
-    CrateBinarySection, DepTableEntry, LenArrayType, PackageSection, RawArrayType,
+    CrateBinarySection, CratePackage, DepTableEntry, LenArrayType, PackageSection, RawArrayType,
     SigStructureSection, Size, Type,
 };
 use crate::utils::pkcs::PKCS;
 use std::collections::HashMap;
+
 
 pub const NOT_SIG_NUM: usize = 3;
 
@@ -102,6 +103,32 @@ impl PackageContext {
         let mut c = CrateBinary::new();
         c.set_bin(bin);
         self.crate_binary = c;
+    }
+
+    /// Get binary data before signature section for signing/verification.
+    /// This function removes the signature-related parts from section_index to break circular dependency:
+    /// - section_index depends on sigStructure values
+    /// - sigStructure calculation depends on section_index
+    /// Solution: zero out the signature-related parts in section_index when calculating signature digest.
+    pub fn binary_before_sig(&self, crate_package: &CratePackage, bin: &[u8]) -> Vec<u8> {
+        let ds_size = crate_package
+            .section_index
+            .datasection_size_without_sig();
+        let total_size = crate_package.crate_header.ds_offset as usize + ds_size;
+        if crate_package.section_index.sig_num() != self.sigs.len() && !self.sigs.is_empty() {
+            assert_eq!(crate_package.section_index.sig_num(), 0);
+        }
+        let mut buf = bin[..total_size].to_vec();
+        let zero_begin = crate_package.crate_header.si_offset as usize
+            + crate_package.section_index.none_sig_size();
+        let zero_end = crate_package.crate_header.si_offset as usize
+            + crate_package.crate_header.si_size as usize;
+        // Zero out the signature-related parts in section_index
+        for i in buf.iter_mut().take(zero_end).skip(zero_begin) {
+            *i = 0;
+        }
+
+        buf
     }
 }
 
@@ -269,7 +296,11 @@ pub enum SrcTypePath {
     P2p(String),
 }
 
-///StringTable
+/// StringTable is a hash map to store the string and its offset.
+/// It can be used to store and get the string by its offset.
+/// When storing, every string(byte array) starts with its length(4 bytes).
+///
+/// Every time we insert a new string, we have to add its length( plus 4 bytes) to the total bytes.
 pub struct StringTable {
     str2off: HashMap<String, u32>,
     off2str: HashMap<u32, String>,
@@ -293,6 +324,7 @@ impl StringTable {
         new_str_table
     }
 
+    // insert string to string table and return the offset of the new string.
     pub fn insert_str(&mut self, st: String) -> u32 {
         return if self.str2off.contains_key(&st) {
             *self.str2off.get(&st).unwrap()

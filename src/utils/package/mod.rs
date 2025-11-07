@@ -21,9 +21,8 @@ pub type Uchar = u8;
 ///Unsigned str offset
 type StrOff = u32;
 
-//custom Encode
-//custom Decode
-///len + array
+
+/// Length-prefixed array
 #[derive(Debug)]
 pub struct LenArrayType<T: 'static> {
     pub len: Size,
@@ -89,6 +88,9 @@ impl<T> Default for RawArrayType<T> {
     }
 }
 
+/// DataSectionCollectionType is a collection of DataSection which is an enum type.
+/// First 3 elements are fixed, and the last elements are about signature section.
+/// 
 /// auto encode
 /// self decode
 /// collections(array whose elem is enum)
@@ -135,13 +137,11 @@ pub const FINGERPRINT_LEN: usize = 32;
 
 pub type FingerPrintType = [Uchar; FINGERPRINT_LEN];
 
-pub const CRATEVERSION: Uchar = 0;
+pub const CRATE_VERSION: Uchar = 0;
 
-//package structure
-
-//auto encode
-//non-self decode
-///top-level package structure
+/// CratePackage is the top-level package structure.
+/// This structure contains all the information of a crate package, and will
+/// be serialized into a .scrate file.
 #[derive(Encode, Debug)]
 pub struct CratePackage {
     pub magic_number: MagicNumberType,
@@ -288,12 +288,24 @@ pub fn datasection_type(d: &DataSection) -> Type {
 //auto encode
 //auto decode
 ///package section structure
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Debug)]
+#[bincode(context = ())]
 pub struct PackageSection {
     pub pkg_name: StrOff,
     pub pkg_version: StrOff,
     pub pkg_license: StrOff,
     pub pkg_authors: LenArrayType<StrOff>,
+}
+
+impl bincode::Decode<()> for PackageSection {
+    fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            pkg_name: bincode::Decode::decode(decoder)?,
+            pkg_version: bincode::Decode::decode(decoder)?,
+            pkg_license: bincode::Decode::decode(decoder)?,
+            pkg_authors: bincode::Decode::decode(decoder)?,
+        })
+    }
 }
 
 impl PackageSection {
@@ -346,9 +358,17 @@ impl Default for DepTableEntry {
 //auto encode
 //non-self decode
 ///Dependency table section structure
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Debug)]
 pub struct DepTableSection {
     pub entries: LenArrayType<DepTableEntry>,
+}
+
+impl bincode::Decode<()> for DepTableSection {
+    fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            entries: bincode::Decode::decode(decoder)?,
+        })
+    }
 }
 
 impl DepTableSection {

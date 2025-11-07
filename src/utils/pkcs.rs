@@ -39,6 +39,8 @@ impl PKCS {
         root_ca_bins
     }
 
+    // load certificate, private key and root ca from file.
+
     pub fn load_from_file_writer(
         &mut self,
         cert_path: String,

@@ -1,7 +1,7 @@
 use bincode;
 use bincode::config::{legacy, Configuration, Fixint, LittleEndian, NoLimit};
 use bincode::de::read::{Reader, SliceReader};
-use bincode::de::{Decoder, DecoderImpl};
+use bincode::de::DecoderImpl;
 use bincode::enc::Encoder;
 use bincode::{enc, BorrowDecode, Decode, Encode};
 
@@ -16,12 +16,14 @@ use crate::utils::package::{
 
 pub const BINCODE_CONFIG: Configuration<LittleEndian, Fixint, NoLimit> = legacy();
 
+// encode to get the size of the encoded data.
 pub fn encode_size_by_bincode<T: enc::Encode>(val: &T) -> usize {
     let mut size_encoder = enc::EncoderImpl::new(enc::write::SizeWriter::default(), BINCODE_CONFIG);
     val.encode(&mut size_encoder).unwrap();
     size_encoder.into_writer().bytes_written
 }
 
+// encode to get the binary content of the encoded data.
 pub fn encode2vec_by_bincode<T: enc::Encode>(val: &T) -> Vec<u8> {
     let mut buffer = vec![0; encode_size_by_bincode(val)];
     let mut encoder = enc::EncoderImpl::new(
@@ -32,15 +34,15 @@ pub fn encode2vec_by_bincode<T: enc::Encode>(val: &T) -> Vec<u8> {
     buffer
 }
 
-pub fn decode_slice_by_bincode<T: bincode::de::Decode>(bin: &[u8]) -> T {
+pub fn decode_slice_by_bincode<T: bincode::de::Decode<()>>(bin: &[u8]) -> T {
     let (res, _) = bincode::decode_from_slice(bin, BINCODE_CONFIG).unwrap();
     res
 }
 
 pub fn create_bincode_slice_decoder(
     bin: &[u8],
-) -> DecoderImpl<SliceReader, Configuration<LittleEndian, Fixint, NoLimit>> {
-    DecoderImpl::new(SliceReader::new(bin), BINCODE_CONFIG)
+) -> DecoderImpl<SliceReader<'_>, Configuration<LittleEndian, Fixint, NoLimit>, ()> {
+    DecoderImpl::new(SliceReader::new(bin), BINCODE_CONFIG, ())
 }
 
 //===============custom Encode, Decode===============
@@ -56,8 +58,8 @@ impl<T: Encode + 'static> Encode for LenArrayType<T> {
     }
 }
 
-impl<T: Decode + 'static> Decode for LenArrayType<T> {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl<T: Decode<()> + 'static> Decode<()> for LenArrayType<T> {
+    fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D) -> Result<Self, DecodeError> {
         let mut len_array = LenArrayType::<T>::new();
         len_array.len = bincode::Decode::decode(decoder)?;
         for _i in 0..len_array.len {
@@ -67,8 +69,8 @@ impl<T: Decode + 'static> Decode for LenArrayType<T> {
     }
 }
 
-impl<'de, T: BorrowDecode<'de> + 'static> BorrowDecode<'de> for LenArrayType<T> {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de>>(
+impl<'de, T: BorrowDecode<'de, ()> + 'static> BorrowDecode<'de, ()> for LenArrayType<T> {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = ()>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         let mut len_array = LenArrayType::<T>::new();
@@ -97,8 +99,8 @@ impl<T: Encode + 'static> Encode for RawArrayType<T> {
 }
 
 ///RawArray Decode
-impl<T: Decode + 'static> RawArrayType<T> {
-    pub fn decode<D: Decoder>(decoder: &mut D, elem_num: usize) -> Result<Self, DecodeError> {
+impl<T: Decode<()> + 'static> RawArrayType<T> {
+    pub fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D, elem_num: usize) -> Result<Self, DecodeError> {
         //TODO FIXME
         // if TypeId::of::<u8>() == TypeId::of::<T>() || TypeId::of::<Uchar>() == TypeId::of::<T>() || TypeId::of::<Type>() == TypeId::of::<T>(){
         //     let mut buf = vec![0 as u8; 8 * elem_num];
@@ -150,8 +152,8 @@ impl Encode for DataSection {
     }
 }
 
-impl Decode for SigStructureSection {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl Decode<()> for SigStructureSection {
+    fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D) -> Result<Self, DecodeError> {
         let sigstruct_size: Size = Decode::decode(decoder)?;
         let sigstruct_type: Type = Decode::decode(decoder)?;
         let sigstruct_sig = RawArrayType::<u8>::decode(decoder, sigstruct_size as usize)?;
@@ -195,13 +197,13 @@ impl CratePackage {
         };
     }
 
-    pub fn decode<D: Decoder>(decoder: &mut D, bin: &[u8]) -> Result<Self, DecodeError> {
-        let magic_number: MagicNumberType = Decode::decode(decoder).unwrap();
+    pub fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D, bin: &[u8]) -> Result<Self, DecodeError> {
+        let magic_number: MagicNumberType = <MagicNumberType as Decode<()>>::decode(decoder).unwrap();
         if !is_magic_number(&magic_number) {
             return Err(DecodeError::Other("magic not right!"));
         }
 
-        let crate_header: CrateHeader = Decode::decode(decoder)?;
+        let crate_header: CrateHeader = <CrateHeader as Decode<()>>::decode(decoder)?;
 
         early_return!(
             bin.len() > (crate_header.strtable_size + crate_header.strtable_offset) as usize,
@@ -250,7 +252,7 @@ impl CratePackage {
         );
         let fingerprint_bin = &bin[bin.len() - FINGERPRINT_LEN..];
         let finger_print: FingerPrintType =
-            Decode::decode(&mut create_bincode_slice_decoder(fingerprint_bin))?;
+            <FingerPrintType as Decode<()>>::decode(&mut create_bincode_slice_decoder(fingerprint_bin))?;
 
         Ok(Self {
             magic_number,
@@ -265,7 +267,7 @@ impl CratePackage {
 
 ///SectionIndex Decode
 impl SectionIndex {
-    pub fn decode<D: Decoder>(decoder: &mut D, elem_num: usize) -> Result<Self, DecodeError> {
+    pub fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D, elem_num: usize) -> Result<Self, DecodeError> {
         Ok(Self {
             entries: RawArrayType::<SectionIndexEntry>::decode(decoder, elem_num)?,
         })
@@ -274,7 +276,7 @@ impl SectionIndex {
 
 ///RawCollection Decode
 impl DataSectionCollectionType {
-    pub fn decode<D: Decoder>(
+    pub fn decode<D: bincode::de::Decoder<Context = ()>>(
         decoder: &mut D,
         enum_size_offset_in_bytes: Vec<(i32, usize, usize)>,
     ) -> Result<Self, DecodeError> {
@@ -290,11 +292,11 @@ impl DataSectionCollectionType {
             }
             match type_id {
                 0 => {
-                    let pack_sec: PackageSection = Decode::decode(decoder)?;
+                    let pack_sec: PackageSection = <PackageSection as Decode<()>>::decode(decoder)?;
                     raw_col.col.arr.push(DataSection::PackageSection(pack_sec));
                 }
                 1 => {
-                    let dep_table: DepTableSection = Decode::decode(decoder)?;
+                    let dep_table: DepTableSection = <DepTableSection as Decode<()>>::decode(decoder)?;
                     raw_col
                         .col
                         .arr
@@ -309,7 +311,7 @@ impl DataSectionCollectionType {
                         .push(DataSection::CrateBinarySection(crate_binary));
                 }
                 4 => {
-                    let sig_structure: SigStructureSection = Decode::decode(decoder)?;
+                    let sig_structure: SigStructureSection = <SigStructureSection as Decode<()>>::decode(decoder)?;
                     raw_col
                         .col
                         .arr
@@ -342,7 +344,7 @@ impl DataSectionCollectionType {
 
 //CrateBinarySection decode
 impl CrateBinarySection {
-    pub fn decode<D: Decoder>(decoder: &mut D, size_in_bytes: usize) -> Result<Self, DecodeError> {
+    pub fn decode<D: bincode::de::Decoder<Context = ()>>(decoder: &mut D, size_in_bytes: usize) -> Result<Self, DecodeError> {
         let mut dep_table = CrateBinarySection::new();
         dep_table.bin = RawArrayType::<Uchar>::decode(decoder, size_in_bytes)?;
         Ok(dep_table)

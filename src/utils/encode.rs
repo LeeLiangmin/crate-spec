@@ -2,7 +2,7 @@ use crate::utils::context::{PackageContext, StringTable, NOT_SIG_NUM};
 use crate::utils::package::{
     datasection_type, CrateBinarySection, CratePackage, DataSection, DataSectionCollectionType,
     DepTableEntry, DepTableSection, LenArrayType, Off, PackageSection, RawArrayType,
-    SectionIndexEntry, SigStructureSection, Size, CRATEVERSION, FINGERPRINT_LEN, MAGIC_NUMBER,
+    SectionIndexEntry, SigStructureSection, Size, CRATE_VERSION, FINGERPRINT_LEN, MAGIC_NUMBER,
 };
 
 use crate::utils::package::gen_bincode::{encode2vec_by_bincode, encode_size_by_bincode};
@@ -28,7 +28,7 @@ impl CratePackage {
     }
 
     pub fn set_crate_header(&mut self, fake_num: usize) {
-        self.crate_header.c_version = CRATEVERSION;
+        self.crate_header.c_version = CRATE_VERSION;
         self.crate_header.strtable_size = self.string_table.size() as Size;
         self.crate_header.strtable_offset =
             (self.crate_header.size() + self.magic_number.len()) as Size;
@@ -50,6 +50,7 @@ impl CratePackage {
 }
 
 impl PackageContext {
+    // write package info, dependency info and crate binary to CratePackage data sections without signature section
     fn write_to_data_section_collection_without_sig(
         &self,
         dsc: &mut DataSectionCollectionType,
@@ -102,6 +103,7 @@ impl PackageContext {
     }
     fn set_sigs(&self, crate_package: &mut CratePackage, non_sig_num: usize) {
         crate_package.data_sections.col.arr.truncate(non_sig_num);
+        // only type information is correct. or, it's a placeholder for signature section.
         self.write_to_data_section_collection_sig(&mut crate_package.data_sections);
     }
 
@@ -114,8 +116,14 @@ impl PackageContext {
 
     fn calc_sigs(&mut self, crate_package: &CratePackage) {
         let bin_all = encode2vec_by_bincode(crate_package);
+
+        // binary slice before signature section
         let bin_all = self.binary_before_sig(crate_package, bin_all.as_slice());
+
+        // binary slice of crate binary section 
         let bin_crate = crate_package.crate_binary_section().bin.arr.as_slice();
+
+
         self.sigs.iter_mut().for_each(|siginfo| {
             let digest;
             match siginfo.typ {
@@ -146,9 +154,18 @@ impl PackageContext {
         crate_package: &mut CratePackage,
     ) {
         crate_package.set_magic_numer();
+
+        // Package contexts info (package, dep, crate binary) are written
+        // to CratePackage data sections without signature section
         self.set_pack_dep_bin(crate_package, str_table);
-        //this is setting fake sigsection
+
+        // since siginfo's bin and size are not calculated yet, we need to set fake signature section at first.
+        // only make signature section's placeholder.
         self.set_sigs(crate_package, NOT_SIG_NUM);
+
+        // we have constructed data sections, so let's set section index and string table.
+        // since signature section is not calculated yet, so here the signature section's index is
+        // is not right for signature sections.
         crate_package.set_section_index();
         crate_package.set_string_table(str_table);
         crate_package.set_crate_header(0);
@@ -156,20 +173,23 @@ impl PackageContext {
 
     //2 sig
     fn encode_sig_to_crate_package(&mut self, crate_package: &mut CratePackage) {
+        // SigInfo's bin and size are calculated here.
         self.calc_sigs(crate_package);
-        //this is setting true sigsection
+    
+        // Set real signature section into each CratePackage's SigStructureSection
         self.set_sigs(crate_package, NOT_SIG_NUM);
     }
 
     //3 after sig
     fn encode_to_crate_package_after_sig(&self, crate_package: &mut CratePackage) {
-        crate_package.set_section_index();
-        crate_package.set_crate_header(0);
+        crate_package.set_section_index();  
+        // crate_package.set_crate_header(0); // header no need to be recalculated. 
         let finger_print = self.calc_fingerprint(crate_package);
         crate_package.set_finger_print(finger_print);
     }
 
-    //1 2 3
+    
+    //4. The final step to encode the crate package to binary
     pub fn encode_to_crate_package(&mut self) -> (CratePackage, StringTable, Vec<u8>) {
         let mut crate_package = CratePackage::new();
         let mut str_table = StringTable::new();

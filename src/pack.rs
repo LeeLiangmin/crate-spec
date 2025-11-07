@@ -51,6 +51,10 @@ impl Packing {
         }
     }
 
+
+    // read .crate file and parse toml file, then 
+    // we can get the package info and dependency info
+    // and then we can add the crate binary to the pack_context
     fn read_crate(&mut self) {
         //parse crate toml file
         let mut toml_path = self.crate_path.clone();

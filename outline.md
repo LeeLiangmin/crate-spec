@@ -22,10 +22,9 @@
   - [编码流程（生成 .scrate）](#编码流程生成-scrate)
   - [解码流程（验证并提取 .crate）](#解码流程验证并提取-crate)
 - [安全机制](#安全机制)
-- [测试示例](#测试示例)
-- [技术栈](#技术栈)
 - [设计特点](#设计特点)
-- [代码索引](#代码索引)
+- [使用说明](#使用说明)
+- [功能验证](#功能验证)
 
 ---
 
@@ -110,14 +109,10 @@ crate-spec/
 - `sigs`: 签名信息列表
 - `root_cas`: 根CA证书列表（用于验证）
 
-**签名类型：**
-- `SIGTYPE::FILE`: 对整个文件签名
-- `SIGTYPE::CRATEBIN`: 仅对 crate 二进制签名
+日常逻辑处理依赖于这个结构。
 
-**相关文件：**
-- [`src/utils/context.rs:24`](src/utils/context.rs#L24) - PackageContext 定义
 
----
+
 
 ### 3. 编码流程 (`src/utils/encode.rs`)
 
@@ -298,10 +293,6 @@ encode_to_crate_package_after_sig()
 7. 写入 .scrate 文件到输出目录
 ```
 
-**关键函数调用链：**
-- [`src/main.rs:63`](src/main.rs#L63) → `pack_context()`
-- [`src/pack.rs:84`](src/pack.rs#L84) → `Packing::pack_context()`
-- [`src/utils/encode.rs:173`](src/utils/encode.rs#L173) → `encode_to_crate_package()`
 
 ---
 
@@ -327,12 +318,6 @@ encode_to_crate_package_after_sig()
 6. 导出元数据到 {name}-{version}-metadata.txt
 ```
 
-**关键函数调用链：**
-- [`src/main.rs:96`](src/main.rs#L96) → `unpack_context()`
-- [`src/unpack.rs:35`](src/unpack.rs#L35) → `Unpacking::unpack_context()`
-- [`src/utils/decode.rs:154`](src/utils/decode.rs#L154) → `decode_from_crate_package()`
-
----
 
 ## 安全机制
 
@@ -351,36 +336,6 @@ encode_to_crate_package_after_sig()
 
 ---
 
-## 测试示例
-
-项目包含测试脚本（`test/example/`）：
-
-- **encode_crate.sh**: 编码示例
-- **decode_crate.sh**: 解码示例
-- **hack_file.sh** + **hack.py**: 完整性测试
-  - 模式0: 修改文件字节（会被指纹检测）
-  - 模式1: 修改文件并重算指纹（会被签名检测）
-
-**测试文件：**
-- [`test/example/encode_crate.sh`](test/example/encode_crate.sh)
-- [`test/example/decode_crate.sh`](test/example/decode_crate.sh)
-- [`test/example/hack_file.sh`](test/example/hack_file.sh)
-- [`test/example/hack.py`](test/example/hack.py)
-
----
-
-## 技术栈
-
-- **bincode**: 二进制序列化
-- **openssl**: PKCS7签名和SHA256
-- **toml**: TOML解析
-- **clap**: 命令行参数解析
-
-**依赖配置：**
-- [`Cargo.toml`](Cargo.toml)
-
----
-
 ## 设计特点
 
 1. **自定义二进制格式**：紧凑且可扩展
@@ -391,45 +346,257 @@ encode_to_crate_package_after_sig()
 
 ---
 
-## 代码索引
+## 使用说明
 
-### 核心数据结构
+### 编码（生成 .scrate 文件）
 
-| 结构体 | 文件位置 | 行号 |
-|--------|---------|------|
-| `PackageContext` | [`src/utils/context.rs`](src/utils/context.rs) | [24](src/utils/context.rs#L24) |
-| `CratePackage` | [`src/utils/package/mod.rs`](src/utils/package/mod.rs) | [145](src/utils/package/mod.rs#L145) |
-| `StringTable` | [`src/utils/context.rs`](src/utils/context.rs) | [273](src/utils/context.rs#L273) |
-| `PackageInfo` | [`src/utils/context.rs`](src/utils/context.rs) | [115](src/utils/context.rs#L115) |
-| `DepInfo` | [`src/utils/context.rs`](src/utils/context.rs) | [168](src/utils/context.rs#L168) |
-| `SigInfo` | [`src/utils/context.rs`](src/utils/context.rs) | [382](src/utils/context.rs#L382) |
+使用 `-e` 选项将 Rust 项目编码为 `.scrate` 文件。
 
-### 核心算法
+**必需参数：**
+- `-e`: 启用编码模式
+- `-r <root-ca.pem>`: 根CA证书文件路径（可指定多个，使用多个 `-r`）
+- `-c <cert.pem>`: 发布者证书文件路径
+- `-p <key.pem>`: 发布者私钥文件路径
+- `-o <output_dir>`: 输出目录路径
+- `<project_path>`: 要编码的 Rust 项目路径
 
-| 功能 | 文件位置 | 行号 |
-|------|---------|------|
-| 编码流程 | [`src/utils/encode.rs`](src/utils/encode.rs) | [173](src/utils/encode.rs#L173) |
-| 解码流程 | [`src/utils/decode.rs`](src/utils/decode.rs) | [154](src/utils/decode.rs#L154) |
-| 签名计算 | [`src/utils/encode.rs`](src/utils/encode.rs) | [115](src/utils/encode.rs#L115) |
-| 签名验证 | [`src/utils/decode.rs`](src/utils/decode.rs) | [129](src/utils/decode.rs#L129) |
-| 指纹计算 | [`src/utils/encode.rs`](src/utils/encode.rs) | [137](src/utils/encode.rs#L137) |
-| 指纹验证 | [`src/utils/decode.rs`](src/utils/decode.rs) | [124](src/utils/decode.rs#L124) |
+**示例：**
+```bash
+crate-spec -e \
+           -r test/root-ca.pem \
+           -c test/cert.pem \
+           -p test/key.pem \
+           -o test/output \
+           /path/to/rust-project
+```
 
-### 入口点
+**功能说明：**
+1. 自动调用 `cargo package --allow-dirty` 打包项目
+2. 解析 `Cargo.toml` 提取包信息和依赖信息
+3. 读取生成的 `.crate` 文件
+4. 使用提供的证书和私钥对包进行 PKCS7 签名
+5. 生成带签名的 `.scrate` 文件并保存到输出目录
 
-| 功能 | 文件位置 | 行号 |
-|------|---------|------|
-| 命令行入口 | [`src/main.rs`](src/main.rs) | [38](src/main.rs#L38) |
-| 打包逻辑 | [`src/pack.rs`](src/pack.rs) | [84](src/pack.rs#L84) |
-| 解包逻辑 | [`src/unpack.rs`](src/unpack.rs) | [35](src/unpack.rs#L35) |
+---
 
-### 工具模块
+### 解码（验证并提取 .crate 文件）
 
-| 功能 | 文件位置 |
-|------|---------|
-| PKCS7签名 | [`src/utils/pkcs.rs`](src/utils/pkcs.rs) |
-| TOML解析 | [`src/utils/from_toml.rs`](src/utils/from_toml.rs) |
-| 二进制序列化 | [`src/utils/package/gen_bincode.rs`](src/utils/package/gen_bincode.rs) |
+使用 `-d` 选项解码 `.scrate` 文件，验证其完整性和来源。
+
+**必需参数：**
+- `-d`: 启用解码模式
+- `-r <root-ca.pem>`: 根CA证书文件路径（可指定多个，使用多个 `-r`）
+- `-o <output_dir>`: 输出目录路径
+- `<scrate_file>`: 要解码的 `.scrate` 文件路径
+
+**示例：**
+```bash
+crate-spec -d \
+           -r test/root-ca.pem \
+           -o test/output \
+           test/output/crate-spec-0.1.0.scrate
+```
+
+**功能说明：**
+1. 读取 `.scrate` 文件二进制数据
+2. 验证文件指纹（SHA256，检查文件完整性）
+3. 解析二进制结构，提取包信息、依赖信息
+4. 验证 PKCS7 数字签名（验证发布者身份）
+5. 提取原始 `.crate` 文件到输出目录
+6. 导出包元数据到 `{name}-{version}-metadata.txt` 文件
+
+**输出文件：**
+- `{name}-{version}.crate`: 原始 crate 文件
+- `{name}-{version}-metadata.txt`: 包元数据（包含包信息和依赖信息）
+
+**错误处理：**
+- 如果指纹验证失败，会输出 `fingerprint not right`
+- 如果签名验证失败，会输出 `file sig not right`
+
+---
+
+## 功能验证
+
+项目提供了完整的测试脚本和示例，位于 `test/example/` 目录。
+
+### 测试脚本说明
+
+#### 1. encode_crate.sh - 编码测试
+
+**功能：** 编码当前项目（crate-spec）为 `.scrate` 文件
+
+**使用方法：**
+```bash
+cd test/example
+sh encode_crate.sh
+```
+
+**执行流程：**
+1. 编译项目（`cargo build`）
+2. 运行编码命令，生成 `crate-spec-0.1.0.scrate` 文件
+3. 输出文件保存在 `test/output/` 目录
+
+**输出：**
+- `test/output/crate-spec-0.1.0.scrate`: 生成的签名包文件
+
+---
+
+#### 2. decode_crate.sh - 解码测试
+
+**功能：** 解码 `.scrate` 文件，验证并提取原始 crate 文件
+
+**使用方法：**
+```bash
+cd test/example
+sh decode_crate.sh
+```
+
+**前置条件：**
+- 需要先运行 `encode_crate.sh` 生成 `.scrate` 文件
+
+**执行流程：**
+1. 编译项目（`cargo build`）
+2. 运行解码命令，验证并解码 `.scrate` 文件
+3. 提取原始 `.crate` 文件和元数据
+
+**输出：**
+- `test/output/crate-spec-0.1.0.crate`: 提取的原始 crate 文件
+- `test/output/crate-spec-0.1.0-metadata.txt`: 包元数据文件
+
+---
+
+#### 3. hack_file.sh + hack.py - 完整性测试
+
+**功能：** 测试文件完整性保护机制，模拟文件损坏和篡改场景
+
+**使用方法：**
+```bash
+cd test/example
+sh hack_file.sh <mode>
+```
+
+**参数说明：**
+- `mode = 0`: 模拟文件传输错误（修改文件字节）
+- `mode = 1`: 模拟恶意篡改（修改文件并重算指纹）
+
+---
+
+##### 模式 0：文件传输错误测试
+
+**场景：** 模拟在文件传输过程中发生字节错误
+
+**步骤：**
+```bash
+# 1. 首先生成 .scrate 文件
+sh encode_crate.sh
+
+# 2. 模拟传输错误（修改文件中的某些字节）
+sh hack_file.sh 0
+
+# 3. 尝试解码，应该检测到指纹错误
+sh decode_crate.sh
+```
+
+**预期结果：**
+```
+fingerprint not right
+```
+
+**原理：** 文件末尾的 SHA256 指纹与文件内容不匹配，完整性检查失败。
+
+---
+
+##### 模式 1：恶意篡改测试
+
+**场景：** 模拟攻击者修改文件内容并重新计算指纹
+
+**步骤：**
+```bash
+# 1. 重新生成 .scrate 文件
+sh encode_crate.sh
+
+# 2. 模拟恶意篡改（修改文件内容并重算指纹）
+sh hack_file.sh 1
+
+# 3. 尝试解码，应该检测到签名错误
+sh decode_crate.sh
+```
+
+**预期结果：**
+```
+file sig not right
+```
+
+**原理：** 
+- 虽然指纹匹配（攻击者重算了），但文件内容被修改
+- 解码时会重新计算摘要并与签名中的摘要比对
+- 由于内容被修改，摘要不匹配，签名验证失败
+
+---
+
+### 测试文件结构
+
+```
+test/
+├── example/
+│   ├── encode_crate.sh    # 编码测试脚本
+│   ├── decode_crate.sh    # 解码测试脚本
+│   ├── hack_file.sh       # 完整性测试脚本
+│   └── hack.py            # Python 脚本（用于修改文件）
+├── output/                # 测试输出目录
+│   ├── *.scrate           # 生成的签名包文件
+│   ├── *.crate            # 解码后的原始包文件
+│   └── *-metadata.txt     # 包元数据文件
+├── cert.pem               # 测试用证书
+├── key.pem                # 测试用私钥
+└── root-ca.pem            # 测试用根CA证书
+```
+
+---
+
+### 完整测试流程示例
+
+```bash
+# 进入测试目录
+cd test/example
+
+# 1. 编码测试
+sh encode_crate.sh
+# 输出: test/output/crate-spec-0.1.0.scrate
+
+# 2. 解码测试
+sh decode_crate.sh
+# 输出: 
+#   - test/output/crate-spec-0.1.0.crate
+#   - test/output/crate-spec-0.1.0-metadata.txt
+
+# 3. 完整性测试 - 传输错误
+sh encode_crate.sh
+sh hack_file.sh 0
+sh decode_crate.sh
+# 预期: fingerprint not right
+
+# 4. 完整性测试 - 恶意篡改
+sh encode_crate.sh
+sh hack_file.sh 1
+sh decode_crate.sh
+# 预期: file sig not right
+```
+
+---
+
+### 测试注意事项
+
+1. **证书文件：** 确保 `test/` 目录下有有效的证书文件：
+   - `cert.pem`: 发布者证书
+   - `key.pem`: 发布者私钥
+   - `root-ca.pem`: 根CA证书
+
+2. **Python 依赖：** `hack.py` 需要 Python 3，使用标准库，无需额外依赖
+
+3. **输出目录：** 测试脚本会自动创建 `test/output/` 目录
+
+4. **清理测试：** 如需重新测试，可以删除 `test/output/` 目录中的文件
 
 ---
 
@@ -437,51 +604,11 @@ encode_to_crate_package_after_sig()
 
 - [返回顶部](#crate-spec-项目概览)
 - [项目结构](#项目结构)
-- [核心模块](#核心模块分析)
+- [核心模块分析](#核心模块分析)
 - [执行流程](#执行流程)
-- [代码索引](#代码索引)
+- [安全机制](#安全机制)
+- [设计特点](#设计特点)
+- [使用说明](#使用说明)
+- [功能验证](#功能验证)
 
 ---
-
-
-## 设计上的问题
-1. 若仅对 crate 计算摘要，计算 hash, 完全可以。
-
-2. 若对完整文件计算 hash , 存在循环依赖。
-   + index section 依赖于 sigStructure 的值
-   + sigStructure 正确计算又依赖于  index section 的正确
-   + 暂时解决办法：
-      + 分步计算摘要，去除掉 index section 部分
-      + 针对这部分来签名
-
-
-
-
-## 实际构建过程
-+ 设置 dep、pkg、strtable 信息
-+ 构建 sigStuctures 各个部分的占位
-+ 构建 sectionIndex 
-+ 构建 strTable 
-+ 构建 crateHeader 信息
--------------------------------------
-问题根源：
-+ 依据全部内容，更新sigStructures 部分
-+ 更新索引的偏移数据
--------------------------------------
-+ 计算出全文指纹
-
-
-## todos
-1. 性能优化
-2. 解决签名的问题
-3. 内部魔术部分考虑改为枚举实现
-4. 内部设计了多个签名，实际实现仅一个签名，使用 pkcs.
-5. 需要考虑底层数据布局
-   + 填充、对齐的问题
-   + 顺序的问题
-
-
-
-
-
-

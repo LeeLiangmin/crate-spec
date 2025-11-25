@@ -1,0 +1,25 @@
+# 默认配置文件
+# 使用方式: cargo run -- -e 或 cargo run -- -d
+
+[encode]
+# 证书文件路径
+cert_path = "/home/crate-spec/test/cert.pem"
+# 根CA证书路径
+root_ca_path = "/home/crate-spec/test/root-ca.pem"
+# 私钥文件路径
+private_key_path = "/home/crate-spec/test/key.pem"
+# 输出目录路径
+output_path = "/home/crate-spec/test/output/"
+# 输入文件路径（需要根据实际情况修改）
+input_path = "/home/crate-spec/"
+
+
+
+[decode]
+# 根CA证书路径
+root_ca_path = "/home/crate-spec/test/root-ca.pem"
+# 输出目录路径
+output_path = "/home/crate-spec/test/output/"
+# 输入文件路径（需要根据实际情况修改）
+input_path = "/home/crate-spec/test/output/crate-spec-0.2.0.scrate"
+

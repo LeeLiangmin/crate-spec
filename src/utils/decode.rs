@@ -1,19 +1,21 @@
-use crate::utils::context::{DepInfo, PackageContext, SigInfo, StringTable};
+use crate::utils::context::{DepInfo, PackageContext, SigInfo, StringTable, DATASECTIONTYPE, SIGTYPE};
 use crate::utils::package::{
     CrateBinarySection, CratePackage, DataSection, DepTableSection, PackageSection, SectionIndex,
     SigStructureSection, FINGERPRINT_LEN,
 };
+use crate::error::Result;
 
 use crate::utils::pkcs::PKCS;
+use crate::network::{NetworkSignature, BaseConfig, digest_to_hex_string};
 
 impl SectionIndex {
-    pub fn section_id_by_type(&self, typ: usize) -> usize {
+    pub fn section_id_by_type(&self, typ: usize) -> Result<usize> {
         for (i, entry) in self.entries.arr.iter().enumerate() {
             if entry.sh_type as usize == typ {
-                return i;
+                return Ok(i);
             }
         }
-        panic!("section typ not found")
+        Err(crate::error::CrateSpecError::DecodeError(format!("未找到类型为 {} 的数据段", typ)))
     }
 }
 
@@ -22,44 +24,43 @@ impl CratePackage {
         &self.data_sections.col.arr[id]
     }
 
-    pub fn data_section_by_type(&self, typ: usize) -> &DataSection {
-        self.data_section_by_id(self.section_index.section_id_by_type(typ))
+    pub fn data_section_by_type(&self, typ: usize) -> Result<&DataSection> {
+        Ok(self.data_section_by_id(self.section_index.section_id_by_type(typ)?))
     }
 
-    pub fn package_section(&self) -> &PackageSection {
-        //FIXME: 0 should be constant
-        match self.data_section_by_type(0) {
-            DataSection::PackageSection(pak) => pak,
+    pub fn package_section(&self) -> Result<&PackageSection> {
+        match self.data_section_by_type(DATASECTIONTYPE::PACK.as_u8() as usize)? {
+            DataSection::PackageSection(pak) => Ok(pak),
             _ => {
-                panic!("package section not found!")
+                Err(crate::error::CrateSpecError::DecodeError("package section not found!".to_string()))
             }
         }
     }
 
-    pub fn dep_table_section(&self) -> &DepTableSection {
-        match self.data_section_by_type(1) {
-            DataSection::DepTableSection(dep) => dep,
+    pub fn dep_table_section(&self) -> Result<&DepTableSection> {
+        match self.data_section_by_type(DATASECTIONTYPE::DEPTABLE.as_u8() as usize)? {
+            DataSection::DepTableSection(dep) => Ok(dep),
             _ => {
-                panic!("dep table section not found!")
+                Err(crate::error::CrateSpecError::DecodeError("dep table section not found!".to_string()))
             }
         }
     }
 
-    pub fn crate_binary_section(&self) -> &CrateBinarySection {
-        match self.data_section_by_type(3) {
-            DataSection::CrateBinarySection(cra) => cra,
+    pub fn crate_binary_section(&self) -> Result<&CrateBinarySection> {
+        match self.data_section_by_type(DATASECTIONTYPE::CRATEBIN.as_u8() as usize)? {
+            DataSection::CrateBinarySection(cra) => Ok(cra),
             _ => {
-                panic!("crate binary section not found!")
+                Err(crate::error::CrateSpecError::DecodeError("crate binary section not found!".to_string()))
             }
         }
     }
 
-    pub fn sig_structure_section(&self, no: usize) -> &SigStructureSection {
-        let base = self.section_index.section_id_by_type(4);
+    pub fn sig_structure_section(&self, no: usize) -> Result<&SigStructureSection> {
+        let base = self.section_index.section_id_by_type(DATASECTIONTYPE::SIGSTRUCTURE.as_u8() as usize)?;
         match self.data_section_by_id(no + base) {
-            DataSection::SigStructureSection(sig) => sig,
+            DataSection::SigStructureSection(sig) => Ok(sig),
             _ => {
-                panic!("sig structure section not found!")
+                Err(crate::error::CrateSpecError::DecodeError("sig structure section not found!".to_string()))
             }
         }
     }
@@ -70,82 +71,129 @@ impl PackageContext {
         bin[..bin.len() - FINGERPRINT_LEN].to_vec()
     }
 
-    fn pack_info(&mut self, crate_package: &CratePackage, str_table: &StringTable) {
+    fn pack_info(&mut self, crate_package: &CratePackage, str_table: &StringTable) -> Result<()> {
         self.pack_info
-            .read_from_package_section(crate_package.package_section(), str_table);
+            .read_from_package_section(crate_package.package_section()?, str_table)?;
+        Ok(())
     }
 
-    fn deps(&mut self, crate_package: &CratePackage, str_table: &StringTable) {
-        for entry in crate_package.dep_table_section().entries.arr.iter() {
+    fn deps(&mut self, crate_package: &CratePackage, str_table: &StringTable) -> Result<()> {
+        for entry in crate_package.dep_table_section()?.entries.arr.iter() {
             let mut dep_info = DepInfo::default();
-            dep_info.read_from_dep_table_entry(entry, str_table);
+            dep_info.read_from_dep_table_entry(entry, str_table)?;
             self.dep_infos.push(dep_info);
         }
+        Ok(())
     }
 
-    fn binary(&mut self, crate_package: &CratePackage) {
-        self.crate_binary.bytes = crate_package.crate_binary_section().bin.arr.clone();
+    fn binary(&mut self, crate_package: &CratePackage) -> Result<()> {
+        self.crate_binary.bytes = crate_package.crate_binary_section()?.bin.arr.clone();
+        Ok(())
     }
 
-    fn sigs(&mut self, crate_package: &CratePackage) {
+    fn sigs(&mut self, crate_package: &CratePackage) -> Result<()> {
         let sig_num = crate_package.section_index.sig_num();
         for no in 0..sig_num {
-            let sig = crate_package.sig_structure_section(no);
+            let sig = crate_package.sig_structure_section(no)?;
             let mut sig_info = SigInfo::new();
-            sig_info.bin = sig.sigstruct_sig.arr.clone();
-            sig_info.size = sig.sigstruct_size as usize;
-            sig_info.typ = sig.sigstruct_type as u32;
+            sig_info.read_from_sig_structure_section(sig)?;
             self.sigs.push(sig_info);
         }
+        Ok(())
     }
 
-    fn check_fingerprint(&self, bin_all: &[u8]) -> bool {
-        PKCS::new().gen_digest_256(&bin_all[..bin_all.len() - FINGERPRINT_LEN])
-            == bin_all[bin_all.len() - FINGERPRINT_LEN..]
+    fn check_fingerprint(&self, bin_all: &[u8]) -> Result<bool> {
+        let calculated = PKCS::new().gen_digest_256(&bin_all[..bin_all.len() - FINGERPRINT_LEN])?;
+        Ok(calculated == bin_all[bin_all.len() - FINGERPRINT_LEN..])
     }
 
-    fn check_sigs(&self, crate_package: &CratePackage, bin_all: &[u8]) -> bool {
+    fn check_sigs(&self, crate_package: &CratePackage, bin_all: &[u8]) -> Result<()> {
         let bin_all = self.binary_before_sig(crate_package, bin_all);
-        let bin_crate = crate_package.crate_binary_section().bin.arr.as_slice();
+        let bin_crate = crate_package.crate_binary_section()?.bin.arr.as_slice();
+        
         for siginfo in self.sigs.iter() {
-            let actual_digest;
-            //FIXME this should be encapsulated as it's used in encode as well
             match siginfo.typ {
-                0 => {
-                    actual_digest = siginfo.pkcs.gen_digest_256(bin_all.as_slice());
+                typ if typ == SIGTYPE::FILE.as_u32() || typ == SIGTYPE::CRATEBIN.as_u32() => {
+                    // 本地签名验证
+                    let actual_digest = match siginfo.typ {
+                        typ if typ == SIGTYPE::FILE.as_u32() => siginfo.pkcs.gen_digest_256(bin_all.as_slice())?,
+                        typ if typ == SIGTYPE::CRATEBIN.as_u32() => siginfo.pkcs.gen_digest_256(bin_crate)?,
+                        _ => unreachable!(),
+                    };
+                    let expect_digest = PKCS::decode_pkcs_bin(siginfo.bin.as_slice(), &self.root_cas)?;
+                    if actual_digest != expect_digest {
+                        return Err(crate::error::CrateSpecError::SignatureError("本地签名验证失败".to_string()));
+                    }
                 }
-                1 => {
-                    actual_digest = siginfo.pkcs.gen_digest_256(bin_crate);
+                typ if typ == SIGTYPE::NETWORK.as_u32() => {
+                    // 网络签名验证
+                    // 从 PackageContext 获取 PkiClient
+                    let pki_client = self.network_client.as_ref()
+                        .ok_or_else(|| crate::error::CrateSpecError::Other("网络签名需要设置 network_client".to_string()))?;
+                    
+                    // 从 siginfo.bin 反序列化 NetworkSignature
+                    let network_sig: NetworkSignature = bincode::decode_from_slice(
+                        &siginfo.bin,
+                        bincode::config::standard(),
+                    )
+                    .map_err(|e| crate::error::CrateSpecError::DecodeError(format!("无法反序列化网络签名: {}", e)))?
+                    .0;
+                    
+                    // 计算内容摘要（网络签名统一使用 CRATEBIN 类型，只对 crate binary 签名）
+                    let actual_digest = siginfo.pkcs.gen_digest_256(bin_crate)?;
+                    
+                    // 转换为十六进制字符串
+                    let digest_hex = digest_to_hex_string(&actual_digest);
+                    
+                    // 使用从签名段提取的算法信息构建 BaseConfig
+                    let base_config = BaseConfig {
+                        algo: network_sig.algo.clone(),
+                        flow: network_sig.flow.clone(),
+                        kms: network_sig.kms.clone().unwrap_or_default(),
+                    };
+                    
+                    // 调用 PKI 平台验签接口
+                    match pki_client.verify_digest(
+                        &network_sig.pub_key,
+                        &digest_hex,
+                        &network_sig.signature,
+                        &base_config,
+                    ) {
+                        Ok(true) => {
+                            // 验签成功
+                        }
+                        Ok(false) => {
+                            return Err(crate::error::CrateSpecError::SignatureError("网络签名验证失败".to_string()));
+                        }
+                        Err(e) => {
+                            return Err(crate::error::CrateSpecError::PkiError(e));
+                        }
+                    }
                 }
                 _ => {
-                    panic!("sig type is not right!")
+                    return Err(crate::error::CrateSpecError::Other(format!("不支持的签名类型: {}", siginfo.typ)));
                 }
             }
-            let expect_digest = PKCS::decode_pkcs_bin(siginfo.bin.as_slice(), &self.root_cas);
-            if actual_digest != expect_digest {
-                return false;
-            };
         }
-        true
+        Ok(())
     }
 
     pub fn decode_from_crate_package(
         &mut self,
         bin: &[u8],
-    ) -> Result<(CratePackage, StringTable), String> {
-        if !self.check_fingerprint(bin) {
-            return Err("fingerprint not right".to_string());
+    ) -> Result<(CratePackage, StringTable)> {
+        if !self.check_fingerprint(bin)? {
+            return Err(crate::error::CrateSpecError::DecodeError("fingerprint not right".to_string()));
         }
-        let crate_package = CratePackage::decode_from_slice(bin)?;
+        let crate_package = CratePackage::decode_from_slice(bin)
+            .map_err(|e| crate::error::CrateSpecError::DecodeError(format!("解码失败: {}", e)))?;
         let mut str_table = StringTable::new();
-        str_table.read_bytes(crate_package.string_table.arr.as_slice());
-        self.pack_info(&crate_package, &str_table);
-        self.deps(&crate_package, &str_table);
-        self.binary(&crate_package);
-        self.sigs(&crate_package);
-        if !self.check_sigs(&crate_package, bin) {
-            return Err("file sig not right".to_string());
-        }
+        str_table.read_bytes(crate_package.string_table.arr.as_slice())?;
+        self.pack_info(&crate_package, &str_table)?;
+        self.deps(&crate_package, &str_table)?;
+        self.binary(&crate_package)?;
+        self.sigs(&crate_package)?;
+        self.check_sigs(&crate_package, bin)?;
         Ok((crate_package, str_table))
     }
 }
@@ -183,7 +231,8 @@ fn test_encode_decode() {
     }
 
     fn crate_binary() -> Vec<u8> {
-        [15; 100].to_vec()
+        // 测试用的二进制数据
+        vec![0u8; 100]
     }
 
     fn sign() -> PKCS {

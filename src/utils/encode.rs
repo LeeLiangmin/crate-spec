@@ -1,12 +1,14 @@
-use crate::utils::context::{PackageContext, StringTable, NOT_SIG_NUM};
+use crate::utils::context::{PackageContext, StringTable, NOT_SIG_NUM, SIGTYPE};
 use crate::utils::package::{
     datasection_type, CrateBinarySection, CratePackage, DataSection, DataSectionCollectionType,
     DepTableEntry, DepTableSection, LenArrayType, Off, PackageSection, RawArrayType,
     SectionIndexEntry, SigStructureSection, Size, CRATE_VERSION, FINGERPRINT_LEN, MAGIC_NUMBER,
 };
+use crate::error::Result;
 
 use crate::utils::package::gen_bincode::{encode2vec_by_bincode, encode_size_by_bincode};
 use crate::utils::pkcs::PKCS;
+use crate::network::{NetworkSignature, digest_to_hex_string};
 
 impl CratePackage {
     pub fn set_section_index(&mut self) {
@@ -114,35 +116,85 @@ impl PackageContext {
         );
     }
 
-    fn calc_sigs(&mut self, crate_package: &CratePackage) {
+    fn calc_sigs(&mut self, crate_package: &CratePackage) -> Result<()> {
         let bin_all = encode2vec_by_bincode(crate_package);
 
         // binary slice before signature section
         let bin_all = self.binary_before_sig(crate_package, bin_all.as_slice());
 
         // binary slice of crate binary section 
-        let bin_crate = crate_package.crate_binary_section().bin.arr.as_slice();
+        let bin_crate = crate_package.crate_binary_section()?.bin.arr.as_slice();
 
-
-        self.sigs.iter_mut().for_each(|siginfo| {
-            let digest;
+        for siginfo in self.sigs.iter_mut() {
             match siginfo.typ {
-                0 => {
-                    digest = siginfo.pkcs.gen_digest_256(bin_all.as_slice());
+                typ if typ == SIGTYPE::FILE.as_u32() => {
+                    // 本地签名：FILE 类型
+                    let digest = siginfo.pkcs.gen_digest_256(bin_all.as_slice())?;
+                    siginfo.bin = siginfo.pkcs.encode_pkcs_bin(digest.as_slice())?;
+                    siginfo.size = siginfo.bin.len();
                 }
-                1 => {
-                    digest = siginfo.pkcs.gen_digest_256(bin_crate);
+                typ if typ == SIGTYPE::CRATEBIN.as_u32() => {
+                    // 本地签名：CRATEBIN 类型
+                    let digest = siginfo.pkcs.gen_digest_256(bin_crate)?;
+                    siginfo.bin = siginfo.pkcs.encode_pkcs_bin(digest.as_slice())?;
+                    siginfo.size = siginfo.bin.len();
+                }
+                typ if typ == SIGTYPE::NETWORK.as_u32() => {
+                    // 网络签名：NETWORK 类型（对应 CRATEBIN，只对 crate binary 签名）
+                    // 从 PackageContext 获取 PkiClient 和 KeyPair
+                    let pki_client = self.network_client.as_ref()
+                        .ok_or_else(|| crate::error::CrateSpecError::Other("网络签名需要设置 network_client".to_string()))?;
+                    let keypair = self.network_keypair.as_ref()
+                        .ok_or_else(|| crate::error::CrateSpecError::Other("网络签名需要设置 network_keypair".to_string()))?;
+                    
+                    // 计算摘要（网络签名统一使用 CRATEBIN 类型，只对 crate binary 签名）
+                    let digest = siginfo.pkcs.gen_digest_256(bin_crate)?;
+                    
+                    // 转换为十六进制字符串
+                    let digest_hex = digest_to_hex_string(&digest);
+                    
+                    // 调用 PKI 平台签名接口
+                    let (signature, _cert) = pki_client.sign_digest(
+                        &keypair.priv_key,
+                        &digest_hex,
+                        &keypair.base_config,
+                    ).map_err(|e| crate::error::CrateSpecError::PkiError(e))?;
+                    
+                    // 将公钥、签名、算法信息封装为 NetworkSignature
+                    let network_sig = NetworkSignature {
+                        pub_key: keypair.pub_key.clone(),
+                        signature,
+                        algo: keypair.base_config.algo.clone(),
+                        flow: keypair.base_config.flow.clone(),
+                        kms: if keypair.base_config.kms.is_empty() {
+                            None
+                        } else {
+                            Some(keypair.base_config.kms.clone())
+                        },
+                        key_id: if keypair.key_id.is_empty() {
+                            None
+                        } else {
+                            Some(keypair.key_id.clone())
+                        },
+                    };
+                    
+                    // 序列化 NetworkSignature
+                    let encoded = bincode::encode_to_vec(&network_sig, bincode::config::standard())
+                        .map_err(|e| crate::error::CrateSpecError::EncodeError(format!("无法序列化网络签名: {}", e)))?;
+                    
+                    siginfo.bin = encoded;
+                    siginfo.size = siginfo.bin.len();
+                    siginfo.pub_key = Some(keypair.pub_key.clone());
                 }
                 _ => {
-                    panic!("sig type is not right!")
+                    return Err(crate::error::CrateSpecError::Other(format!("不支持的签名类型: {}", siginfo.typ)));
                 }
             }
-            siginfo.bin = siginfo.pkcs.encode_pkcs_bin(digest.as_slice());
-            siginfo.size = siginfo.bin.len();
-        });
+        }
+        Ok(())
     }
 
-    fn calc_fingerprint(&self, crate_package: &CratePackage) -> Vec<u8> {
+    fn calc_fingerprint(&self, crate_package: &CratePackage) -> Result<Vec<u8>> {
         let bin_all = encode2vec_by_bincode(crate_package);
         PKCS::new().gen_digest_256(&bin_all[..bin_all.len() - FINGERPRINT_LEN])
     }
@@ -172,31 +224,33 @@ impl PackageContext {
     }
 
     //2 sig
-    fn encode_sig_to_crate_package(&mut self, crate_package: &mut CratePackage) {
+    fn encode_sig_to_crate_package(&mut self, crate_package: &mut CratePackage) -> Result<()> {
         // SigInfo's bin and size are calculated here.
-        self.calc_sigs(crate_package);
+        self.calc_sigs(crate_package)?;
     
         // Set real signature section into each CratePackage's SigStructureSection
         self.set_sigs(crate_package, NOT_SIG_NUM);
+        Ok(())
     }
 
     //3 after sig
-    fn encode_to_crate_package_after_sig(&self, crate_package: &mut CratePackage) {
+    fn encode_to_crate_package_after_sig(&self, crate_package: &mut CratePackage) -> Result<()> {
         crate_package.set_section_index();  
         // crate_package.set_crate_header(0); // header no need to be recalculated. 
-        let finger_print = self.calc_fingerprint(crate_package);
+        let finger_print = self.calc_fingerprint(crate_package)?;
         crate_package.set_finger_print(finger_print);
+        Ok(())
     }
 
     
     //4. The final step to encode the crate package to binary
-    pub fn encode_to_crate_package(&mut self) -> (CratePackage, StringTable, Vec<u8>) {
+    pub fn encode_to_crate_package(&mut self) -> Result<(CratePackage, StringTable, Vec<u8>)> {
         let mut crate_package = CratePackage::new();
         let mut str_table = StringTable::new();
         self.encode_to_crate_package_before_sig(&mut str_table, &mut crate_package);
-        self.encode_sig_to_crate_package(&mut crate_package);
-        self.encode_to_crate_package_after_sig(&mut crate_package);
+        self.encode_sig_to_crate_package(&mut crate_package)?;
+        self.encode_to_crate_package_after_sig(&mut crate_package)?;
         let bin = encode2vec_by_bincode(&crate_package);
-        (crate_package, str_table, bin)
+        Ok((crate_package, str_table, bin))
     }
 }

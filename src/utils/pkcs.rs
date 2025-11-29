@@ -1,3 +1,4 @@
+use crate::error::{Result, CrateSpecError};
 use openssl::hash::{hash, MessageDigest};
 use std::fmt::{Debug, Formatter};
 use std::fs;
@@ -31,12 +32,15 @@ impl PKCS {
             root_ca_bins: vec![],
         }
     }
-    pub fn root_ca_bins(ca_paths: Vec<String>) -> Vec<Vec<u8>> {
+    pub fn root_ca_bins(ca_paths: Vec<String>) -> Result<Vec<Vec<u8>>> {
         let mut root_ca_bins = vec![];
         for ca_path in ca_paths {
-            root_ca_bins.push(fs::read(Path::new(ca_path.as_str())).unwrap());
+            let path = Path::new(ca_path.as_str());
+            let bin = fs::read(path)
+                .map_err(|_e| CrateSpecError::FileNotFound(path.to_path_buf()))?;
+            root_ca_bins.push(bin);
         }
-        root_ca_bins
+        Ok(root_ca_bins)
     }
 
     // load certificate, private key and root ca from file.
@@ -46,69 +50,91 @@ impl PKCS {
         cert_path: String,
         pkey_path: String,
         ca_paths: Vec<String>,
-    ) {
-        //just for demo
-        self.cert_bin = fs::read(Path::new(cert_path.as_str())).unwrap();
-        self.pkey_bin = fs::read(Path::new(pkey_path.as_str())).unwrap();
+    ) -> Result<()> {
+        let cert_path_buf = Path::new(cert_path.as_str());
+        self.cert_bin = fs::read(cert_path_buf)
+            .map_err(|_e| CrateSpecError::FileNotFound(cert_path_buf.to_path_buf()))?;
+        let pkey_path_buf = Path::new(pkey_path.as_str());
+        self.pkey_bin = fs::read(pkey_path_buf)
+            .map_err(|_e| CrateSpecError::FileNotFound(pkey_path_buf.to_path_buf()))?;
         for ca_path in ca_paths {
-            self.root_ca_bins
-                .push(fs::read(Path::new(ca_path.as_str())).unwrap());
+            let ca_path_buf = Path::new(ca_path.as_str());
+            let ca_bin = fs::read(ca_path_buf)
+                .map_err(|_e| CrateSpecError::FileNotFound(ca_path_buf.to_path_buf()))?;
+            self.root_ca_bins.push(ca_bin);
         }
+        Ok(())
     }
 
-    pub fn load_from_file_reader(&mut self, ca_paths: Vec<String>) {
-        //just for demo
+    pub fn load_from_file_reader(&mut self, ca_paths: Vec<String>) -> Result<()> {
         for ca_path in ca_paths {
-            self.root_ca_bins
-                .push(fs::read(Path::new(ca_path.as_str())).unwrap());
+            let ca_path_buf = Path::new(ca_path.as_str());
+            let ca_bin = fs::read(ca_path_buf)
+                .map_err(|_e| CrateSpecError::FileNotFound(ca_path_buf.to_path_buf()))?;
+            self.root_ca_bins.push(ca_bin);
         }
+        Ok(())
     }
 
-    pub fn encode_pkcs_bin(&self, message: &[u8]) -> Vec<u8> {
+    pub fn encode_pkcs_bin(&self, message: &[u8]) -> Result<Vec<u8>> {
         //FIXME current we don't support middle certs
-        let cert = X509::from_pem(self.cert_bin.as_slice()).unwrap();
-        let certs = Stack::new().unwrap();
+        let cert = X509::from_pem(self.cert_bin.as_slice())
+            .map_err(|e| CrateSpecError::ParseError(format!("解析证书失败: {}", e)))?;
+        let certs = Stack::new()
+            .map_err(|e| CrateSpecError::Other(format!("创建证书栈失败: {}", e)))?;
         let flags = Pkcs7Flags::STREAM;
-        let pkey = PKey::private_key_from_pem(self.pkey_bin.as_slice()).unwrap();
-        let mut store_builder = X509StoreBuilder::new().expect("should succeed");
+        let pkey = PKey::private_key_from_pem(self.pkey_bin.as_slice())
+            .map_err(|e| CrateSpecError::ParseError(format!("解析私钥失败: {}", e)))?;
+        let mut store_builder = X509StoreBuilder::new()
+            .map_err(|e| CrateSpecError::Other(format!("创建证书存储构建器失败: {}", e)))?;
 
         for root_ca_bin in self.root_ca_bins.iter() {
-            let root_ca = X509::from_pem(root_ca_bin.as_slice()).unwrap();
-            store_builder.add_cert(root_ca).expect("should succeed");
+            let root_ca = X509::from_pem(root_ca_bin.as_slice())
+                .map_err(|e| CrateSpecError::ParseError(format!("解析根 CA 证书失败: {}", e)))?;
+            store_builder.add_cert(root_ca)
+                .map_err(|e| CrateSpecError::Other(format!("添加根 CA 证书失败: {}", e)))?;
         }
 
         let _store = store_builder.build();
 
-        let pkcs7 = Pkcs7::sign(&cert, &pkey, &certs, message, flags).expect("should succeed");
+        let pkcs7 = Pkcs7::sign(&cert, &pkey, &certs, message, flags)
+            .map_err(|e| CrateSpecError::SignatureError(format!("PKCS7 签名失败: {}", e)))?;
 
-        pkcs7.to_smime(message, flags).expect("should succeed")
+        pkcs7.to_smime(message, flags)
+            .map_err(|e| CrateSpecError::SignatureError(format!("生成 S/MIME 数据失败: {}", e)))
     }
 
-    pub fn decode_pkcs_bin(signed_bin: &[u8], root_ca_bins: &[Vec<u8>]) -> Vec<u8> {
+    pub fn decode_pkcs_bin(signed_bin: &[u8], root_ca_bins: &[Vec<u8>]) -> Result<Vec<u8>> {
         //FIXME maybe all pkcs section should share same root cas
-        let certs = Stack::new().unwrap();
+        let certs = Stack::new()
+            .map_err(|e| CrateSpecError::Other(format!("创建证书栈失败: {}", e)))?;
         let flags = Pkcs7Flags::STREAM;
-        let mut store_builder = X509StoreBuilder::new().expect("should succeed");
+        let mut store_builder = X509StoreBuilder::new()
+            .map_err(|e| CrateSpecError::Other(format!("创建证书存储构建器失败: {}", e)))?;
 
         for root_ca_bin in root_ca_bins.iter() {
-            let root_ca = X509::from_pem(root_ca_bin.as_slice()).unwrap();
-            store_builder.add_cert(root_ca).expect("should succeed");
+            let root_ca = X509::from_pem(root_ca_bin.as_slice())
+                .map_err(|e| CrateSpecError::ParseError(format!("解析根 CA 证书失败: {}", e)))?;
+            store_builder.add_cert(root_ca)
+                .map_err(|e| CrateSpecError::Other(format!("添加根 CA 证书失败: {}", e)))?;
         }
 
         let store = store_builder.build();
 
-        let (pkcs7_decoded, _content) = Pkcs7::from_smime(signed_bin).expect("should succeed");
+        let (pkcs7_decoded, _content) = Pkcs7::from_smime(signed_bin)
+            .map_err(|e| CrateSpecError::ParseError(format!("解析 S/MIME 数据失败: {}", e)))?;
 
         let mut output = Vec::new();
         pkcs7_decoded
             .verify(&certs, &store, None, Some(&mut output), flags)
-            .expect("should succeed");
-        output
+            .map_err(|e| CrateSpecError::SignatureError(format!("PKCS7 验证失败: {}", e)))?;
+        Ok(output)
     }
 
-    pub fn gen_digest_256(&self, bin: &[u8]) -> Vec<u8> {
-        let res = hash(MessageDigest::sha256(), bin).unwrap();
-        res.to_vec()
+    pub fn gen_digest_256(&self, bin: &[u8]) -> Result<Vec<u8>> {
+        let res = hash(MessageDigest::sha256(), bin)
+            .map_err(|e| CrateSpecError::Other(format!("生成 SHA256 摘要失败: {}", e)))?;
+        Ok(res.to_vec())
     }
 }
 

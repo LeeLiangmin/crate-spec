@@ -6,11 +6,13 @@ file_dir = path.dirname(path.abspath(__file__))
 os.chdir(file_dir)
 args = sys.argv[1:]
 
-with open("../output/crate-spec-0.1.0.scrate", "rb") as fp:
+src_file_path = "../output/crate-spec-0.2.0.scrate"
+
+with open(src_file_path, "rb") as fp:
     bin = bytearray(fp.read())
 
 
-with open("../output/crate-spec-0.1.0.scrate", "wb") as fp:
+with open(src_file_path, "wb") as fp:
     opt = int(args[0])
     if opt == 0:
         bin[200:202] = [10, 20, 30]
@@ -22,4 +24,4 @@ with open("../output/crate-spec-0.1.0.scrate", "wb") as fp:
         fp.write(bin)
         fp.write(data_sha)
 
-
+print(f"hack file {src_file_path} done")

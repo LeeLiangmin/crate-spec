@@ -1,7 +1,8 @@
 # 默认配置文件
 # 使用方式: cargo run -- -e 或 cargo run -- -d
 
-[encode]
+
+[local.encode]
 # 证书文件路径
 cert_path = "/home/crate-spec/test/cert.pem"
 # 根CA证书路径
@@ -14,8 +15,7 @@ output_path = "/home/crate-spec/test/output/"
 input_path = "/home/crate-spec/"
 
 
-
-[decode]
+[local.decode]
 # 根CA证书路径
 root_ca_path = "/home/crate-spec/test/root-ca.pem"
 # 输出目录路径
@@ -23,3 +23,22 @@ output_path = "/home/crate-spec/test/output/"
 # 输入文件路径（需要根据实际情况修改）
 input_path = "/home/crate-spec/test/output/crate-spec-0.2.0.scrate"
 
+
+[net]
+algo = "sm2"
+flow = "classic"
+kms = ""
+pki_base_url = "https://signatom.xuanwu.openatom.cn"
+key_pair_path = "/home/crate-spec/config/keypair.bin"
+retry_times = 3 
+retry_delay = 1000 
+
+
+[network.encode]
+input_path = "/home/crate-spec/"
+output_path = "/home/crate-spec/test/output/"
+
+
+[network.decode]
+input_path = "/home/crate-spec/test/output/crate-spec-0.2.0.scrate"
+output_path = "/home/crate-spec/test/output/"

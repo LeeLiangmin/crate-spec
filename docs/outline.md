@@ -17,7 +17,11 @@
   - [6. TOML 解析](#6-toml-解析-srcutilsfrom_tomlrs)
   - [7. 打包逻辑](#7-打包逻辑-srcpackrs)
   - [8. 解包逻辑](#8-解包逻辑-srcunpackrs)
-  - [9. 命令行接口](#9-命令行接口-srcmainrs)
+  - [9. 配置文件管理](#9-配置文件管理-srcconfigrs)
+  - [10. 网络签名](#10-网络签名-srcnetworkrs)
+  - [11. 命令执行](#11-命令执行-srccommands)
+  - [12. 参数构建](#12-参数构建-srcparamsrs)
+  - [13. 命令行接口](#13-命令行接口-srcmainrs)
 - [执行流程](#执行流程)
   - [编码流程（生成 .scrate）](#编码流程生成-scrate)
   - [解码流程（验证并提取 .crate）](#解码流程验证并提取-crate)
@@ -39,17 +43,28 @@ crate-spec/
 │   ├── lib.rs           # 库入口
 │   ├── pack.rs          # 打包（编码）逻辑
 │   ├── unpack.rs        # 解包（解码）逻辑
+│   ├── config.rs        # 配置文件解析
+│   ├── config_ext.rs    # 配置扩展方法
+│   ├── network.rs       # 网络签名支持
+│   ├── params.rs        # 参数构建器
+│   ├── commands/        # 命令执行模块
+│   │   ├── mod.rs       # 命令模块导出
+│   │   ├── encode.rs    # 编码命令
+│   │   └── decode.rs     # 解码命令
 │   └── utils/
 │       ├── mod.rs       # 工具模块导出
 │       ├── context.rs   # 包上下文数据结构
 │       ├── encode.rs    # 编码实现
 │       ├── decode.rs    # 解码实现
+│       ├── file_ops.rs  # 文件操作工具
 │       ├── from_toml.rs # TOML解析器
 │       ├── pkcs.rs      # PKCS7签名/验证
 │       └── package/     # 二进制格式定义
 │           ├── mod.rs   # 包结构定义
 │           ├── bin.rs   # 编码/解码trait
 │           └── gen_bincode.rs # Bincode序列化实现
+├── config/              # 配置文件目录
+│   └── config.toml      # 默认配置文件
 ├── test/                # 测试文件
 │   ├── example/         # 示例脚本
 │   └── test.toml        # 测试用的TOML文件
@@ -243,24 +258,107 @@ encode_to_crate_package_after_sig()
 
 ---
 
-### 9. 命令行接口 (`src/main.rs`)
+### 9. 配置文件管理 (`src/config.rs`)
 
-使用 `clap` 解析命令行参数：
+`Config` 结构体管理配置文件解析和验证：
 
-**编码模式 (`-e`):**
-- `-r`: 根CA文件路径（可多个）
-- `-c`: 发布者证书路径
-- `-p`: 发布者私钥路径
-- `-o`: 输出目录
-- `<project path>`: Rust项目路径
-
-**解码模式 (`-d`):**
-- `-r`: 根CA文件路径（可多个）
-- `-o`: 输出目录
-- `<.scrate file path>`: `.scrate` 文件路径
+- **配置文件格式**：支持 TOML 格式
+- **配置段**：
+  - `[local.encode]` / `[local.decode]`: 本地签名模式配置
+  - `[network.encode]` / `[network.decode]`: 网络签名模式配置
+  - `[net]`: 网络签名全局配置（PKI URL、密钥对路径等）
+- **向后兼容**：支持旧的 `[encode]` / `[decode]` 格式
 
 **相关文件：**
-- [`src/main.rs:38`](src/main.rs#L38) - 命令行入口
+- [`src/config.rs`](src/config.rs) - 配置解析和验证
+- [`src/config_ext.rs`](src/config_ext.rs) - 配置扩展方法（网络资源创建）
+
+---
+
+### 10. 网络签名 (`src/network.rs`)
+
+网络签名模块提供 PKI 平台集成：
+
+- **KeyPair**: 密钥对管理
+  - `load_from_file()`: 从本地文件加载
+  - `fetch_from_pki()`: 从 PKI 平台获取
+  - `get_or_fetch()`: 优先本地，不存在则从平台获取
+- **PkiClient**: PKI API 客户端
+  - `sign_digest()`: 签名摘要（带重试机制）
+  - `verify_digest()`: 验证签名（带重试机制）
+- **NetworkSignature**: 网络签名数据结构
+
+**相关文件：**
+- [`src/network.rs`](src/network.rs) - 网络签名实现
+
+---
+
+### 11. 命令执行 (`src/commands/`)
+
+命令模块实现了统一的命令执行接口：
+
+- **LocalEncodeCommand**: 本地编码命令
+- **NetworkEncodeCommand**: 网络编码命令
+- **LocalDecodeCommand**: 本地解码命令
+- **NetworkDecodeCommand**: 网络解码命令
+
+每个命令都实现了独立的执行逻辑，使用共享的文件操作工具。
+
+**相关文件：**
+- [`src/commands/encode.rs`](src/commands/encode.rs) - 编码命令实现
+- [`src/commands/decode.rs`](src/commands/decode.rs) - 解码命令实现
+- [`src/utils/file_ops.rs`](src/utils/file_ops.rs) - 共享文件操作工具
+
+---
+
+### 12. 参数构建 (`src/params.rs`)
+
+`ParamsBuilder` 负责从命令行参数和配置文件中构建执行参数：
+
+- **参数来源**：
+  - 配置文件模式：从 `Config` 中提取
+  - 命令行模式：从 `Args` 中提取
+- **参数类型**：
+  - `LocalEncodeParams` / `LocalDecodeParams`: 本地模式参数
+  - `NetworkEncodeParams` / `NetworkDecodeParams`: 网络模式参数
+
+**相关文件：**
+- [`src/params.rs`](src/params.rs) - 参数构建器
+
+---
+
+### 13. 命令行接口 (`src/main.rs`)
+
+使用 `clap` 解析命令行参数，支持两种模式：
+
+**模式选择 (`--mode`):**
+- `local`: 本地签名模式（默认）
+- `net`: 网络签名模式
+
+**本地模式参数：**
+- `--config [PATH]`: 使用配置文件（默认：`config/config.toml`）
+- `--cli`: 使用命令行参数（与 `--config` 互斥）
+
+**编码模式 (`-e`):**
+- `-r`: 根CA文件路径（可多个，仅 CLI 模式）
+- `-c`: 发布者证书路径（仅 CLI 模式）
+- `-p`: 发布者私钥路径（仅 CLI 模式）
+- `-o`: 输出目录
+- `<input>`: 输入路径（Rust 项目路径）
+
+**解码模式 (`-d`):**
+- `-r`: 根CA文件路径（可多个，仅 CLI 模式）
+- `-o`: 输出目录
+- `<input>`: 输入路径（`.scrate` 文件路径）
+
+**执行流程：**
+1. 解析命令行参数
+2. 根据模式加载配置（如需要）
+3. 构建参数构建器
+4. 执行相应命令
+
+**相关文件：**
+- [`src/main.rs`](src/main.rs) - 命令行入口
 
 ---
 
@@ -268,29 +366,65 @@ encode_to_crate_package_after_sig()
 
 ### 编码流程（生成 .scrate）
 
+**本地模式：**
 ```
 1. 解析命令行参数
    ↓
-2. 验证必需参数（证书、私钥、根CA）
+2. 确定配置来源（配置文件或命令行）
    ↓
-3. pack_context() - 打包上下文
+3. 构建参数（ParamsBuilder）
+   ↓
+4. 验证输入文件
+   ↓
+5. pack_context() - 打包上下文
    ├─ 调用 cargo package
    ├─ 解析 Cargo.toml
    └─ 读取生成的 .crate 文件
    ↓
-4. 加载PKCS签名器
+6. 加载PKCS签名器（本地模式）
    ├─ 加载证书
    ├─ 加载私钥
    └─ 加载根CA
    ↓
-5. 添加签名到PackageContext
+7. 添加签名到PackageContext
    ↓
-6. encode_to_crate_package() - 编码
+8. encode_to_crate_package() - 编码
    ├─ 阶段1: 签名前准备（写入数据，占位签名）
    ├─ 阶段2: 计算并写入真实签名
    └─ 阶段3: 计算并写入指纹
    ↓
-7. 写入 .scrate 文件到输出目录
+9. 写入 .scrate 文件到输出目录
+```
+
+**网络模式：**
+```
+1. 解析命令行参数
+   ↓
+2. 加载配置文件（必需）
+   ↓
+3. 构建参数（ParamsBuilder）
+   ↓
+4. 验证输入文件
+   ↓
+5. 从配置创建 PKI 客户端和密钥对
+   ├─ 创建 PkiClient（带重试配置）
+   └─ 获取或加载密钥对（优先本地，不存在则从 PKI 平台获取）
+   ↓
+6. pack_context() - 打包上下文
+   ├─ 调用 cargo package
+   ├─ 解析 Cargo.toml
+   └─ 读取生成的 .crate 文件
+   ↓
+7. 设置网络客户端和密钥对到 PackageContext
+   ↓
+8. 添加网络签名到PackageContext
+   ↓
+9. encode_to_crate_package() - 编码
+   ├─ 阶段1: 签名前准备（写入数据，占位签名）
+   ├─ 阶段2: 通过网络签名服务计算并写入真实签名
+   └─ 阶段3: 计算并写入指纹
+   ↓
+10. 写入 .scrate 文件到输出目录
 ```
 
 
@@ -298,24 +432,55 @@ encode_to_crate_package_after_sig()
 
 ### 解码流程（验证并提取 .crate）
 
+**本地模式：**
 ```
 1. 解析命令行参数
    ↓
-2. 验证必需参数（根CA）
+2. 确定配置来源（配置文件或命令行）
    ↓
-3. 读取 .scrate 文件二进制
+3. 构建参数（ParamsBuilder）
    ↓
-4. unpack_context() - 解包上下文
+4. 验证输入文件
+   ↓
+5. unpack_context() - 解包上下文
    ├─ 加载根CA证书
    └─ decode_from_crate_package() - 解码
        ├─ 验证指纹（完整性检查）
        ├─ 解析二进制结构
-       ├─ 验证签名（身份验证）
+       ├─ 验证签名（身份验证，使用本地根CA）
        └─ 提取数据到PackageContext
    ↓
-5. 提取 .crate 文件到输出目录
+6. 提取 .crate 文件到输出目录
    ↓
-6. 导出元数据到 {name}-{version}-metadata.txt
+7. 导出元数据到 {name}-{version}-metadata.txt
+```
+
+**网络模式：**
+```
+1. 解析命令行参数
+   ↓
+2. 加载配置文件（必需）
+   ↓
+3. 构建参数（ParamsBuilder）
+   ↓
+4. 验证输入文件
+   ↓
+5. 从配置创建 PKI 客户端
+   ├─ 创建 PkiClient（带重试配置）
+   ↓
+6. 读取 .scrate 文件二进制
+   ↓
+7. 创建 PackageContext 并设置网络客户端
+   ↓
+8. decode_from_crate_package() - 解码
+   ├─ 验证指纹（完整性检查）
+   ├─ 解析二进制结构
+   ├─ 验证签名（通过网络 PKI 服务验证）
+   └─ 提取数据到PackageContext
+   ↓
+9. 提取 .crate 文件到输出目录
+   ↓
+10. 导出元数据到 {name}-{version}-metadata.txt
 ```
 
 
@@ -343,26 +508,51 @@ encode_to_crate_package_after_sig()
 3. **段索引**：支持随机访问
 4. **多阶段编码**：先占位再签名，最后计算指纹
 5. **分层验证**：指纹检查完整性，签名验证身份
+6. **模块化设计**：清晰的模块划分，易于维护和扩展
+7. **配置灵活**：支持配置文件和命令行参数两种方式
+8. **双模式支持**：本地签名和网络签名两种模式
+9. **错误处理统一**：统一的错误类型和处理机制
+10. **代码复用**：共享的文件操作和工具函数
 
 ---
 
 ## 使用说明
 
+### 模式选择
+
+crate-spec 支持两种签名模式：
+
+1. **本地模式 (`--mode local`)**: 使用本地证书和私钥进行签名（默认模式）
+2. **网络模式 (`--mode net`)**: 使用 PKI 平台进行网络签名
+
 ### 编码（生成 .scrate 文件）
 
-使用 `-e` 选项将 Rust 项目编码为 `.scrate` 文件。
+#### 本地模式 - 配置文件方式
 
-**必需参数：**
-- `-e`: 启用编码模式
-- `-r <root-ca.pem>`: 根CA证书文件路径（可指定多个，使用多个 `-r`）
-- `-c <cert.pem>`: 发布者证书文件路径
-- `-p <key.pem>`: 发布者私钥文件路径
-- `-o <output_dir>`: 输出目录路径
-- `<project_path>`: 要编码的 Rust 项目路径
+**配置文件示例 (`config/config.toml`):**
+```toml
+[local.encode]
+cert_path = "test/cert.pem"
+root_ca_path = "test/root-ca.pem"
+private_key_path = "test/key.pem"
+output_path = "test/output/"
+input_path = "../crate-spec"
+```
 
-**示例：**
+**命令：**
 ```bash
-crate-spec -e \
+# 使用默认配置文件
+crate-spec -e --config
+
+# 使用自定义配置文件
+crate-spec -e --config my_config.toml
+```
+
+#### 本地模式 - 命令行参数方式
+
+**命令：**
+```bash
+crate-spec -e --cli \
            -r test/root-ca.pem \
            -c test/cert.pem \
            -p test/key.pem \
@@ -370,38 +560,97 @@ crate-spec -e \
            /path/to/rust-project
 ```
 
+#### 网络模式
+
+**配置文件示例 (`config/config.toml`):**
+```toml
+[network.encode]
+input_path = "../crate-spec"
+output_path = "test/output/"
+
+[net]
+pki_base_url = "https://pki.example.com"
+algo = "RSA"
+flow = "default"
+kms = "default"
+key_pair_path = "config/keypair.bin"
+retry_times = 3
+retry_delay = 1000
+```
+
+**命令：**
+```bash
+# 使用默认配置文件
+crate-spec -e --mode net --config
+
+# 使用自定义配置文件
+crate-spec -e --mode net --config my_net_config.toml
+```
+
 **功能说明：**
 1. 自动调用 `cargo package --allow-dirty` 打包项目
 2. 解析 `Cargo.toml` 提取包信息和依赖信息
 3. 读取生成的 `.crate` 文件
-4. 使用提供的证书和私钥对包进行 PKCS7 签名
+4. 根据模式选择签名方式：
+   - 本地模式：使用本地证书和私钥进行 PKCS7 签名
+   - 网络模式：通过网络 PKI 服务进行签名
 5. 生成带签名的 `.scrate` 文件并保存到输出目录
 
 ---
 
 ### 解码（验证并提取 .crate 文件）
 
-使用 `-d` 选项解码 `.scrate` 文件，验证其完整性和来源。
+#### 本地模式 - 配置文件方式
 
-**必需参数：**
-- `-d`: 启用解码模式
-- `-r <root-ca.pem>`: 根CA证书文件路径（可指定多个，使用多个 `-r`）
-- `-o <output_dir>`: 输出目录路径
-- `<scrate_file>`: 要解码的 `.scrate` 文件路径
+**配置文件示例：**
+```toml
+[local.decode]
+root_ca_path = "test/root-ca.pem"
+output_path = "test/output/"
+input_path = "test/output/crate-spec-0.1.0.scrate"
+```
 
-**示例：**
+**命令：**
 ```bash
-crate-spec -d \
+crate-spec -d --config
+```
+
+#### 本地模式 - 命令行参数方式
+
+**命令：**
+```bash
+crate-spec -d --cli \
            -r test/root-ca.pem \
            -o test/output \
            test/output/crate-spec-0.1.0.scrate
+```
+
+#### 网络模式
+
+**配置文件示例：**
+```toml
+[network.decode]
+input_path = "test/output/crate-spec-0.1.0.scrate"
+output_path = "test/output/"
+
+[net]
+pki_base_url = "https://pki.example.com"
+retry_times = 3
+retry_delay = 1000
+```
+
+**命令：**
+```bash
+crate-spec -d --mode net --config
 ```
 
 **功能说明：**
 1. 读取 `.scrate` 文件二进制数据
 2. 验证文件指纹（SHA256，检查文件完整性）
 3. 解析二进制结构，提取包信息、依赖信息
-4. 验证 PKCS7 数字签名（验证发布者身份）
+4. 根据模式验证签名：
+   - 本地模式：使用本地根CA验证 PKCS7 签名
+   - 网络模式：通过网络 PKI 服务验证签名
 5. 提取原始 `.crate` 文件到输出目录
 6. 导出包元数据到 `{name}-{version}-metadata.txt` 文件
 
@@ -410,8 +659,8 @@ crate-spec -d \
 - `{name}-{version}-metadata.txt`: 包元数据（包含包信息和依赖信息）
 
 **错误处理：**
-- 如果指纹验证失败，会输出 `fingerprint not right`
-- 如果签名验证失败，会输出 `file sig not right`
+- 如果指纹验证失败，会输出完整性错误
+- 如果签名验证失败，会输出签名验证错误
 
 ---
 

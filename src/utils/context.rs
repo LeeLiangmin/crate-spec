@@ -3,14 +3,32 @@ use crate::utils::package::{
     SigStructureSection, Size, Type,
 };
 use crate::utils::pkcs::PKCS;
+use crate::network::{NetworkSignature, PkiClient, KeyPair};
+use crate::error::{Result, CrateSpecError};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 
 pub const NOT_SIG_NUM: usize = 3;
 
+/// 字符串长度前缀字节数
+pub const STRING_LENGTH_PREFIX_BYTES: usize = 4;
+
 pub enum SIGTYPE {
     FILE,
     CRATEBIN,
+    NETWORK,
+}
+
+impl SIGTYPE {
+    /// 获取签名类型的数值表示
+    pub fn as_u32(&self) -> u32 {
+        match self {
+            SIGTYPE::FILE => 0,
+            SIGTYPE::CRATEBIN => 1,
+            SIGTYPE::NETWORK => 2,
+        }
+    }
 }
 
 pub enum DATASECTIONTYPE {
@@ -20,14 +38,28 @@ pub enum DATASECTIONTYPE {
     SIGSTRUCTURE = 4,
 }
 
+impl DATASECTIONTYPE {
+    /// 获取数据段类型的数值表示
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            DATASECTIONTYPE::PACK => 0,
+            DATASECTIONTYPE::DEPTABLE => 1,
+            DATASECTIONTYPE::CRATEBIN => 3,
+            DATASECTIONTYPE::SIGSTRUCTURE => 4,
+        }
+    }
+}
+
 ///package context contains package's self and dependency package info
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct PackageContext {
     pub pack_info: PackageInfo,
     pub dep_infos: Vec<DepInfo>,
     pub crate_binary: CrateBinary,
     pub sigs: Vec<SigInfo>,
     pub root_cas: Vec<Vec<u8>>,
+    pub network_client: Option<Arc<PkiClient>>,
+    pub network_keypair: Option<Arc<KeyPair>>,
 }
 
 impl PackageContext {
@@ -38,6 +70,8 @@ impl PackageContext {
             dep_infos: vec![],
             sigs: vec![],
             root_cas: vec![],
+            network_client: None,
+            network_keypair: None,
         }
     }
 
@@ -79,10 +113,7 @@ impl PackageContext {
     pub fn add_sig(&mut self, pkcs: PKCS, sign_type: SIGTYPE) -> usize {
         let mut siginfo = SigInfo::new();
         siginfo.pkcs = pkcs;
-        match sign_type {
-            SIGTYPE::FILE => siginfo.typ = 0,
-            SIGTYPE::CRATEBIN => siginfo.typ = 1,
-        }
+        siginfo.typ = sign_type.as_u32();
         self.sigs.push(siginfo);
         self.sigs.len() - 1
     }
@@ -179,14 +210,15 @@ impl PackageInfo {
         ps.pkg_authors = LenArrayType::copy_from_vec(&authors_off);
     }
 
-    pub fn read_from_package_section(&mut self, ps: &PackageSection, str_table: &StringTable) {
-        self.name = str_table.str_by_off(&ps.pkg_name);
-        self.version = str_table.str_by_off(&ps.pkg_version);
-        self.license = str_table.str_by_off(&ps.pkg_license);
+    pub fn read_from_package_section(&mut self, ps: &PackageSection, str_table: &StringTable) -> Result<()> {
+        self.name = str_table.str_by_off(&ps.pkg_name)?;
+        self.version = str_table.str_by_off(&ps.pkg_version)?;
+        self.license = str_table.str_by_off(&ps.pkg_license)?;
         let authors_off = ps.pkg_authors.to_vec();
-        authors_off.iter().for_each(|author_off| {
-            self.authors.push(str_table.str_by_off(author_off));
-        });
+        for author_off in authors_off.iter() {
+            self.authors.push(str_table.str_by_off(author_off)?);
+        }
+        Ok(())
     }
 }
 
@@ -233,56 +265,35 @@ impl DepInfo {
     pub fn write_to_dep_table_entry(&self, dte: &mut DepTableEntry, str_table: &mut StringTable) {
         dte.dep_name = str_table.insert_str(self.name.clone());
         dte.dep_verreq = str_table.insert_str(self.ver_req.clone());
+        dte.dep_srctype = self.src.as_u8();
         match &self.src {
             SrcTypePath::CratesIo => {
-                dte.dep_srctype = 0;
                 dte.dep_srcpath = str_table.insert_str("".to_string());
             }
             SrcTypePath::Git(str) => {
-                dte.dep_srctype = 1;
                 dte.dep_srcpath = str_table.insert_str(str.clone());
             }
             SrcTypePath::Url(str) => {
-                dte.dep_srctype = 2;
                 dte.dep_srcpath = str_table.insert_str(str.clone());
             }
             SrcTypePath::Registry(str) => {
-                dte.dep_srctype = 3;
                 dte.dep_srcpath = str_table.insert_str(str.clone());
             }
             SrcTypePath::P2p(str) => {
-                dte.dep_srctype = 4;
                 dte.dep_srcpath = str_table.insert_str(str.clone());
             }
         }
         dte.dep_platform = str_table.insert_str(self.src_platform.to_string());
     }
 
-    pub fn read_from_dep_table_entry(&mut self, dte: &DepTableEntry, str_table: &StringTable) {
+    pub fn read_from_dep_table_entry(&mut self, dte: &DepTableEntry, str_table: &StringTable) -> Result<()> {
         self.dump = true;
-        self.name = str_table.str_by_off(&dte.dep_name);
-        self.ver_req = str_table.str_by_off(&dte.dep_verreq);
-        match dte.dep_srctype {
-            0 => {
-                self.src = SrcTypePath::CratesIo;
-            }
-            1 => {
-                self.src = SrcTypePath::Git(str_table.str_by_off(&dte.dep_srcpath));
-            }
-            2 => {
-                self.src = SrcTypePath::Url(str_table.str_by_off(&dte.dep_srcpath));
-            }
-            3 => {
-                self.src = SrcTypePath::Registry(str_table.str_by_off(&dte.dep_srcpath));
-            }
-            4 => {
-                self.src = SrcTypePath::P2p(str_table.str_by_off(&dte.dep_srcpath));
-            }
-            _ => {
-                panic!("dep_srctype not valid!")
-            }
-        }
-        self.src_platform = str_table.str_by_off(&dte.dep_platform);
+        self.name = str_table.str_by_off(&dte.dep_name)?;
+        self.ver_req = str_table.str_by_off(&dte.dep_verreq)?;
+        let path = str_table.str_by_off(&dte.dep_srcpath)?;
+        self.src = SrcTypePath::from_u8_with_path(dte.dep_srctype, path)?;
+        self.src_platform = str_table.str_by_off(&dte.dep_platform)?;
+        Ok(())
     }
 }
 
@@ -294,6 +305,31 @@ pub enum SrcTypePath {
     Url(String),
     Registry(String),
     P2p(String),
+}
+
+impl SrcTypePath {
+    /// 获取依赖源类型的数值表示
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            SrcTypePath::CratesIo => 0,
+            SrcTypePath::Git(_) => 1,
+            SrcTypePath::Url(_) => 2,
+            SrcTypePath::Registry(_) => 3,
+            SrcTypePath::P2p(_) => 4,
+        }
+    }
+
+    /// 从数值创建依赖源类型（需要路径字符串）
+    pub fn from_u8_with_path(value: u8, path: String) -> Result<Self> {
+        match value {
+            0 => Ok(SrcTypePath::CratesIo),
+            1 => Ok(SrcTypePath::Git(path)),
+            2 => Ok(SrcTypePath::Url(path)),
+            3 => Ok(SrcTypePath::Registry(path)),
+            4 => Ok(SrcTypePath::P2p(path)),
+            _ => Err(CrateSpecError::ParseError(format!("无效的依赖源类型: {}", value))),
+        }
+    }
 }
 
 /// StringTable is a hash map to store the string and its offset.
@@ -326,28 +362,32 @@ impl StringTable {
 
     // insert string to string table and return the offset of the new string.
     pub fn insert_str(&mut self, st: String) -> u32 {
-        return if self.str2off.contains_key(&st) {
-            *self.str2off.get(&st).unwrap()
+        if let Some(&offset) = self.str2off.get(&st) {
+            offset
         } else {
             let st_len = st.as_bytes().len() as u32;
             let ret_val = self.total_bytes;
             self.str2off.insert(st.clone(), self.total_bytes);
             self.off2str.insert(self.total_bytes, st.clone());
-            self.total_bytes += 4 + st_len;
+            self.total_bytes += STRING_LENGTH_PREFIX_BYTES as u32 + st_len;
             ret_val
-        };
+        }
     }
 
     pub fn contains_str(&self, st: &String) -> bool {
         self.str2off.contains_key(st)
     }
 
-    pub fn off_by_str(&self, st: &String) -> u32 {
-        *self.str2off.get(st).unwrap()
+    pub fn off_by_str(&self, st: &String) -> Result<u32> {
+        self.str2off.get(st)
+            .copied()
+            .ok_or_else(|| CrateSpecError::Other(format!("字符串表中找不到字符串: {}", st)))
     }
 
-    pub fn str_by_off(&self, off: &u32) -> String {
-        self.off2str.get(off).unwrap().clone()
+    pub fn str_by_off(&self, off: &u32) -> Result<String> {
+        self.off2str.get(off)
+            .cloned()
+            .ok_or_else(|| CrateSpecError::Other(format!("字符串表中找不到偏移量: {}", off)))
     }
 
     ///dump string table to bytes
@@ -357,26 +397,36 @@ impl StringTable {
         let mut bytes = vec![];
         for off in offs {
             //FIXME we use little endian
-            let st = self.off2str.get(&off).unwrap().bytes().clone();
-            bytes.extend((st.len() as u32).to_le_bytes());
-            bytes.extend(st);
+            if let Some(st) = self.off2str.get(&off) {
+                let st_bytes = st.bytes().collect::<Vec<u8>>();
+                bytes.extend((st_bytes.len() as u32).to_le_bytes());
+                bytes.extend(st_bytes);
+            }
         }
         bytes
     }
 
     ///parse string table from bytes
-    pub fn read_bytes(&mut self, bytes: &[u8]) {
+    pub fn read_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         let mut i = 0;
         while i < bytes.len() {
-            let mut len_bytes: [u8; 4] = [0; 4];
-            len_bytes.copy_from_slice(bytes[i..i + 4].as_ref());
+            if i + STRING_LENGTH_PREFIX_BYTES > bytes.len() {
+                return Err(CrateSpecError::DecodeError("字符串表数据不完整".to_string()));
+            }
+            let mut len_bytes: [u8; STRING_LENGTH_PREFIX_BYTES] = [0; STRING_LENGTH_PREFIX_BYTES];
+            len_bytes.copy_from_slice(bytes[i..i + STRING_LENGTH_PREFIX_BYTES].as_ref());
             let len = u32::from_le_bytes(len_bytes) as usize;
-            let st = String::from_utf8(bytes[i + 4..i + 4 + len].to_vec()).unwrap();
+            if i + STRING_LENGTH_PREFIX_BYTES + len > bytes.len() {
+                return Err(CrateSpecError::DecodeError("字符串表数据不完整".to_string()));
+            }
+            let st = String::from_utf8(bytes[i + STRING_LENGTH_PREFIX_BYTES..i + STRING_LENGTH_PREFIX_BYTES + len].to_vec())
+                .map_err(|e| CrateSpecError::DecodeError(format!("UTF-8 解码失败: {}", e)))?;
             self.str2off.insert(st.clone(), i as u32);
             self.off2str.insert(i as u32, st);
-            i += 4 + len;
+            i += STRING_LENGTH_PREFIX_BYTES + len;
             self.total_bytes = i as u32;
         }
+        Ok(())
     }
 }
 
@@ -416,6 +466,7 @@ pub struct SigInfo {
     pub size: usize,
     pub bin: Vec<u8>,
     pub pkcs: PKCS,
+    pub pub_key: Option<String>, // 用于网络签名（兼容性字段，实际数据从 NetworkSignature 中提取）
 }
 
 impl Default for SigInfo {
@@ -431,20 +482,41 @@ impl SigInfo {
             size: 0,
             bin: vec![],
             pkcs: PKCS::new(),
+            pub_key: None,
         }
     }
 
-    pub fn read_from_sig_structure_section(&mut self, sig: &SigStructureSection) {
-        //FIXME current it's not right
+    pub fn read_from_sig_structure_section(&mut self, sig: &SigStructureSection) -> Result<()> {
         self.typ = sig.sigstruct_type as u32;
         self.size = sig.sigstruct_size as usize;
-        self.bin = sig.sigstruct_sig.arr.clone();
+        
+        // 如果是网络签名，反序列化 NetworkSignature
+        if self.typ == SIGTYPE::NETWORK.as_u32() {
+            match bincode::decode_from_slice::<NetworkSignature, _>(
+                &sig.sigstruct_sig.arr,
+                bincode::config::standard(),
+            ) {
+                Ok((network_sig, _)) => {
+                    self.bin = sig.sigstruct_sig.arr.clone();
+                    self.pub_key = Some(network_sig.pub_key.clone());
+                }
+                Err(e) => {
+                    return Err(CrateSpecError::DecodeError(format!("无法反序列化网络签名: {}", e)));
+                }
+            }
+        } else {
+            // 本地签名，直接复制
+            self.bin = sig.sigstruct_sig.arr.clone();
+        }
+        Ok(())
     }
 
     pub fn write_to_sig_structure_section(&self, sig: &mut SigStructureSection) {
-        //FIXME current it's not right
         sig.sigstruct_type = self.typ as Type;
         sig.sigstruct_size = self.size as Size;
+        
+        // 如果是网络签名，bin 应该已经包含序列化的 NetworkSignature
+        // 否则直接使用 bin
         sig.sigstruct_sig = RawArrayType::from_vec(self.bin.clone());
     }
 }

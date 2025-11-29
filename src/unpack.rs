@@ -1,5 +1,6 @@
 use crate_spec::utils::context::PackageContext;
 use crate_spec::utils::pkcs::PKCS;
+use crate_spec::{Result, CrateSpecError};
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -10,33 +11,42 @@ struct Unpacking {
 }
 
 impl Unpacking {
-    pub fn new(path: &str) -> Unpacking {
-        Unpacking {
-            file_path: PathBuf::from_str(path).unwrap(),
+    pub fn new(path: &str) -> Result<Self> {
+        Ok(Unpacking {
+            file_path: PathBuf::from_str(path)
+                .map_err(|e| CrateSpecError::ValidationError(format!("无效的路径: {}", e)))?,
             cas_path: Vec::new(),
-        }
+        })
     }
 
-    pub fn add_ca_from_file(&mut self, path: &str) {
-        let file_path = fs::canonicalize(PathBuf::from_str(path).unwrap()).unwrap();
-        self.cas_path.push(file_path.to_str().unwrap().to_string());
+    pub fn add_ca_from_file(&mut self, path: &str) -> Result<()> {
+        let path_buf = PathBuf::from_str(path)
+            .map_err(|e| CrateSpecError::ValidationError(format!("无效的 CA 路径: {}", e)))?;
+        let file_path = fs::canonicalize(&path_buf)
+            .map_err(|_e| CrateSpecError::FileNotFound(path_buf.clone()))?;
+        let file_path_str = file_path.to_str()
+            .ok_or_else(|| CrateSpecError::Other("无法将路径转换为字符串".to_string()))?;
+        self.cas_path.push(file_path_str.to_string());
+        Ok(())
     }
 
-    pub fn unpack_context(self) -> Result<PackageContext, String> {
+    pub fn unpack_context(self) -> Result<PackageContext> {
         let mut package_context_new = PackageContext::new();
-        package_context_new.set_root_cas_bin(PKCS::root_ca_bins(self.cas_path));
-        let bin = fs::read(self.file_path).unwrap();
+        package_context_new.set_root_cas_bin(PKCS::root_ca_bins(self.cas_path)?);
+        let bin = fs::read(&self.file_path)
+            .map_err(|_e| CrateSpecError::FileNotFound(self.file_path.clone()))?;
         let (_crate_package_new, _str_table) =
-            package_context_new.decode_from_crate_package(bin.as_slice())?;
+            package_context_new.decode_from_crate_package(bin.as_slice())
+                .map_err(|e| CrateSpecError::DecodeError(e.to_string()))?;
         Ok(package_context_new)
     }
 }
 
-pub fn unpack_context(file_path: &str, cas_path: Vec<String>) -> Result<PackageContext, String> {
-    let mut unpack = Unpacking::new(file_path);
-    cas_path
-        .iter()
-        .for_each(|ca_path| unpack.add_ca_from_file(ca_path.as_str()));
+pub fn unpack_context(file_path: &str, cas_path: Vec<String>) -> Result<PackageContext> {
+    let mut unpack = Unpacking::new(file_path)?;
+    for ca_path in cas_path {
+        unpack.add_ca_from_file(&ca_path)?;
+    }
     unpack.unpack_context()
 }
 

@@ -116,8 +116,18 @@ impl PackageContext {
         );
     }
 
-    fn calc_sigs(&mut self, crate_package: &CratePackage) -> Result<()> {
-        let bin_all = encode2vec_by_bincode(crate_package);
+    /// 计算签名，接受预序列化的二进制数据以避免重复序列化
+    /// 
+    /// # Arguments
+    /// * `crate_package` - CratePackage 结构体引用
+    /// * `pre_serialized_bin` - 预序列化的完整二进制数据（可选，如果为 None 则内部序列化）
+    fn calc_sigs(&mut self, crate_package: &CratePackage, pre_serialized_bin: Option<&[u8]>) -> Result<()> {
+        // 使用预序列化的数据或进行序列化
+        let bin_all = if let Some(bin) = pre_serialized_bin {
+            bin.to_vec()
+        } else {
+            encode2vec_by_bincode(crate_package)
+        };
 
         // binary slice before signature section
         let bin_all = self.binary_before_sig(crate_package, bin_all.as_slice());
@@ -194,8 +204,19 @@ impl PackageContext {
         Ok(())
     }
 
-    fn calc_fingerprint(&self, crate_package: &CratePackage) -> Result<Vec<u8>> {
-        let bin_all = encode2vec_by_bincode(crate_package);
+    /// 计算指纹，接受预序列化的二进制数据以避免重复序列化
+    /// 
+    /// # Arguments
+    /// * `crate_package` - CratePackage 结构体引用（用于获取大小信息）
+    /// * `pre_serialized_bin` - 预序列化的完整二进制数据（可选，如果为 None 则内部序列化）
+    fn calc_fingerprint(&self, crate_package: &CratePackage, pre_serialized_bin: Option<&[u8]>) -> Result<Vec<u8>> {
+        // 使用预序列化的数据或进行序列化
+        let bin_all = if let Some(bin) = pre_serialized_bin {
+            bin.to_vec()
+        } else {
+            encode2vec_by_bincode(crate_package)
+        };
+        // 计算除末尾指纹外的所有数据的 SHA256
         PKCS::new().gen_digest_256(&bin_all[..bin_all.len() - FINGERPRINT_LEN])
     }
 
@@ -224,9 +245,10 @@ impl PackageContext {
     }
 
     //2 sig
-    fn encode_sig_to_crate_package(&mut self, crate_package: &mut CratePackage) -> Result<()> {
+    /// 计算并设置签名，接受预序列化的二进制数据
+    fn encode_sig_to_crate_package(&mut self, crate_package: &mut CratePackage, pre_serialized_bin: Option<&[u8]>) -> Result<()> {
         // SigInfo's bin and size are calculated here.
-        self.calc_sigs(crate_package)?;
+        self.calc_sigs(crate_package, pre_serialized_bin)?;
     
         // Set real signature section into each CratePackage's SigStructureSection
         self.set_sigs(crate_package, NOT_SIG_NUM);
@@ -234,23 +256,54 @@ impl PackageContext {
     }
 
     //3 after sig
+    /// 更新段索引（签名后需要重新计算段索引）
+    /// 注意：指纹计算在主函数中进行，以便直接修改序列化结果
     fn encode_to_crate_package_after_sig(&self, crate_package: &mut CratePackage) -> Result<()> {
         crate_package.set_section_index();  
         // crate_package.set_crate_header(0); // header no need to be recalculated. 
-        let finger_print = self.calc_fingerprint(crate_package)?;
-        crate_package.set_finger_print(finger_print);
+        // 指纹计算在主函数中进行，以便直接修改序列化结果，避免重复序列化
         Ok(())
     }
 
     
     //4. The final step to encode the crate package to binary
+    /// 优化的编码流程：减少序列化次数
+    /// 
+    /// 优化策略：
+    /// 1. 签名前序列化一次（用于签名计算）
+    /// 2. 签名后、指纹前序列化一次（用于指纹计算和最终输出）
+    /// 3. 设置指纹后直接修改序列化结果的最后32字节，避免第三次序列化
+    /// 
+    /// 相比原来的实现，序列化次数从3次减少到2次（减少33%）
     pub fn encode_to_crate_package(&mut self) -> Result<(CratePackage, StringTable, Vec<u8>)> {
         let mut crate_package = CratePackage::new();
         let mut str_table = StringTable::new();
+        
+        // 阶段1：签名前准备
         self.encode_to_crate_package_before_sig(&mut str_table, &mut crate_package);
-        self.encode_sig_to_crate_package(&mut crate_package)?;
+        
+        // 阶段2：计算签名
+        // 先序列化一次（用于签名计算）
+        let bin_before_sig = encode2vec_by_bincode(&crate_package);
+        // 使用预序列化的数据进行签名计算
+        self.encode_sig_to_crate_package(&mut crate_package, Some(&bin_before_sig))?;
+        
+        // 阶段3：更新段索引（签名后需要重新计算段索引）
         self.encode_to_crate_package_after_sig(&mut crate_package)?;
-        let bin = encode2vec_by_bincode(&crate_package);
-        Ok((crate_package, str_table, bin))
+        
+        // 阶段4：签名后序列化（用于指纹计算和最终输出）
+        // 段索引已更新，需要重新序列化
+        let mut bin_after_sig = encode2vec_by_bincode(&crate_package);
+        
+        // 阶段5：计算指纹并直接修改序列化结果的最后32字节
+        // 避免第三次完整序列化，只需更新指纹部分
+        let fingerprint = self.calc_fingerprint(&crate_package, Some(&bin_after_sig))?;
+        // 更新 crate_package 中的指纹字段（保持一致性，虽然不会再用到）
+        crate_package.set_finger_print(fingerprint.clone());
+        // 直接修改序列化结果的最后32字节，避免重新序列化整个结构
+        let fp_start = bin_after_sig.len() - FINGERPRINT_LEN;
+        bin_after_sig[fp_start..].copy_from_slice(&fingerprint);
+        
+        Ok((crate_package, str_table, bin_after_sig))
     }
 }

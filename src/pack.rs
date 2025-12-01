@@ -40,6 +40,23 @@ impl Packing {
         })
     }
 
+    /// 执行 cargo package 命令
+    /// 
+    /// 性能优化说明：
+    /// - 当前使用 `cargo package --allow-dirty`，会执行完整的验证步骤
+    /// - 如需提升性能，可以添加 `--no-verify` 选项：
+    ///   ```rust
+    ///   ["package", "--allow-dirty", "--no-verify"].to_vec()
+    ///   ```
+    /// 
+    /// `--no-verify` 选项说明：
+    /// - 跳过编译验证（`cargo build`）和测试（`cargo test`）
+    /// - 可以显著提升打包速度（通常节省 80-95% 时间）
+    /// - 适用于：项目已编译、CI/CD 环境、快速迭代场景
+    /// - 不适用于：需要确保代码可编译的生产环境
+    /// 
+    /// 注意：当前实现不使用 `--no-verify`，以确保代码质量。
+    /// 如需使用，请根据实际场景修改上述代码。
     fn cmd_cargo_package(&self) -> Result<()> {
         let res = run_cmd(
             "cargo",
@@ -50,6 +67,12 @@ impl Packing {
         Ok(())
     }
 
+    // read .crate file and parse toml file, then 
+    // we can get the package info and dependency info
+    // and then we can add the crate binary to the pack_context
+    // read .crate file and parse toml file, then 
+    // we can get the package info and dependency info
+    // and then we can add the crate binary to the pack_context
     // read .crate file and parse toml file, then 
     // we can get the package info and dependency info
     // and then we can add the crate binary to the pack_context
